@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pl" data-env="test" data-build="1">
+<html lang="pl" data-env="test" data-build="2">
 <head>
 <meta charset="utf-8">
 <meta name="robots" content="noindex, nofollow">
@@ -85,6 +85,12 @@
           <label class="search"><svg class="i"><use href="#search"/></svg><input id="lib-search" type="search" placeholder="Szukaj" autocomplete="off" aria-label="Szukaj w nutach"></label>
           <label class="sort"><select id="lib-sort" aria-label="Kolejność"><option value="opened">Ostatnio grane</option><option value="title">Tytuł</option><option value="composer">Kompozytor</option><option value="created">Ostatnio dodane</option></select><svg class="i"><use href="#down"/></svg></label>
         </div>
+      </div>
+      <div class="notice" id="backup-nudge" hidden>
+        <svg class="i"><use href="#download"/></svg>
+        <div class="grow"><b>Zapisz kopię nut</b><span>Na wypadek, gdyby przeglądarka wyczyściła pamięć.</span></div>
+        <button class="link" id="nudge-save">Zapisz</button>
+        <button class="x" id="nudge-x" aria-label="Później"><svg class="i"><use href="#x"/></svg></button>
       </div>
       <div class="grid" id="lib-grid"></div>
       <p class="lib-none" id="lib-none" hidden></p>
