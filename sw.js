@@ -3,14 +3,13 @@
    pdf.js, fonts, the reader's runtime, tens of MB) which survive an update and are checked against the server in
    the background, so a changed library still arrives without the version being bumped. The reader's models
    ("homr-web-models", ~150 MB) and files shared to Solo ("solo-shared") are never touched here. */
-const CACHE = "solo-v31";
+const CACHE = "solo-v32";
 const LIBS = "solo-libs";
-const SHELL = ["./", "index.html", "styles.css", "theme.js", "core.js", "arrange.js", "motion.js", "app.js", "profile.js", "ownsound.js", "clefs.js", "manifest.webmanifest",
+const SHELL = ["./", "index.html", "styles.css", "listen.css", "theme.js", "core.js", "arrange.js", "motion.js", "orb.js", "app.js", "profile.js", "ownsound.js", "clefs.js", "manifest.webmanifest",
   "prywatnosc.html", "regulamin.html", "licencje.html", "legal.js",
-  "img/window.jpg", "img/brass.jpg", "img/flatlay.jpg", "img/piano.jpg",
   "icons/favicon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
-const LIB_FILES = ["fonts/fonts.css", "fonts/bricolage-latin.woff2", "fonts/bricolage-latinext.woff2",
-  "fonts/atkinson-latin.woff2", "fonts/atkinson-latinext.woff2",
+const LIB_FILES = ["fonts/fonts.css", "fonts/geist-latin.woff2", "fonts/geist-latinext.woff2",
+  
   "vendor/verovio-toolkit-wasm.js", "vendor/jszip.min.js", "vendor/pdf.min.js", "vendor/pdf.worker.min.js"];
 /* "reload": past the browser's HTTP cache (GitHub Pages keeps files 10 minutes), so a new version is not filled
    with the old files. Libraries already here are not downloaded again. */

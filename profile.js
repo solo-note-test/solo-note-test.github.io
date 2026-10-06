@@ -71,11 +71,15 @@ const INSTRUMENTS = [
   { id: "bas", name: "Bas", clef: "bass", tr: 0, lo: 40, hi: 64, voice: "voice", group: "Głos" }
 ];
 const INSTR_GROUPS = ["Dęte blaszane", "Dęte drewniane", "Smyczkowe", "Klawiszowe", "Szarpane", "Perkusyjne", "Głos"];
+/* one colour per instrument family, everywhere (Clear Stage: colour = meaning, never a part's index) */
+/* (FAMILY_HUE, the family → colour map, lives in orb.js, which loads first) */
+function hueOf(instr) { const i = typeof instr === "string" ? instrById(instr) : instr; return (i && FAMILY_HUE[i.group]) || "slate"; }
+const hueStyle = instr => { const h = hueOf(instr); return `style="--h:var(--${h});--h-ink:var(--${h}-ink)"`; };
 /* the instrument picker (benchmark: MuseScore, StaffPad, Dorico, BandLab): search, "yours" first, then families */
 const recentInstr = () => { try { const r = JSON.parse(store.get("recentInstr", "[]")); return Array.isArray(r) ? r : []; } catch { return []; } };
 function instrPicker(box, { selected = [], multi = false, onPick }) {
   const p = profile(), mine = [...new Set([...(p.instruments || []), ...recentInstr()])].filter(id => INSTRUMENTS.some(i => i.id === id)).slice(0, 8);
-  const chip = i => `<button class="ichip" data-i="${i.id}" aria-pressed="${selected.includes(i.id)}">${esc(i.name)}</button>`;
+  const chip = i => `<button class="ichip" ${hueStyle(i)} data-i="${i.id}" aria-pressed="${selected.includes(i.id)}">${esc(i.name)}</button>`;
   const draw = q => {
     /* without Polish letters too ("trabka", "altowka"), and by other names ("skrzydłówka", "cello") */
     const f = plainName(q).trim(), alias = f.length > 2 ? instrFromName(f) : null, hit = i => !f || plainName(i.name).includes(f) || alias === i;
@@ -154,7 +158,7 @@ function profileSummary(p = profile()) {
 
 /* ---------------- onboarding: one question per screen, big tiles, always "Pomiń" ---------------- */
 const onb = { step: 0, p: null };
-const ONB_STEPS = ["hello", "instr", "main", "reading", "role", "done"];
+const ONB_STEPS = ["hello", "role", "instr", "main", "reading", "a4", "done"];
 function openOnboarding() {
   onb.p = profile(); onb.p.instruments = [...onb.p.instruments]; onb.step = 0;
   $("#onb").hidden = false; renderOnb();
@@ -163,6 +167,7 @@ function onbSkipStep(name) {
   const p = onb.p;
   if (name === "main") return p.instruments.length < 2;
   if (name === "reading") return !trPc(instrById(p.main));          // an octave apart only: C is still C
+  if (name === "a4") return p.role !== "teacher";                     // pupils keep 440 Hz (the tuner can change it)
   return false;
 }
 function onbGo(d) {
@@ -176,38 +181,39 @@ function finishOnb(skipped) {
   saveProfile(p); store.set("welcomed", "1");
   fadeOut($("#onb"), 220);
 }
-function tile(on, label, data, extra = "") { return `<button class="onb-tile${on ? " on" : ""}" ${data} aria-pressed="${on}">${extra}<span>${esc(label)}</span></button>`; }
+function tile(on, label, data, extra = "", hue = "slate", sub = "") { return `<button class="onb-tile${on ? " on" : ""}" style="--h:var(--${hue});--h-ink:var(--${hue}-ink)" ${data} aria-pressed="${on}">${extra}<span>${esc(label)}${sub ? `<small>${esc(sub)}</small>` : ""}</span></button>`; }
+
 function renderOnb() {
   const p = onb.p, name = ONB_STEPS[onb.step], box = $("#onb-body");
   $("#onb-back").hidden = onb.step === 0;
-  $("#onb-dots").innerHTML = ONB_STEPS.map((_, i) => `<i class="${i === onb.step ? "on" : ""}"></i>`).join("");
+  $("#onb-dots").innerHTML = ONB_STEPS.map((_, i) => `<i class="${i === onb.step ? "on" : i < onb.step ? "done" : ""}"></i>`).join("");   // a progress bar: answered steps filled
   let h = "", next = "Dalej";
   if (name === "hello") {
-    h = `<div class="onb-brand"><svg class="mark"><use href="#note"/></svg><span>Solo</span></div>
-      <h1 class="h-xl">Kilka pytań na start</h1>
-      <p class="onb-lead">Solo ustawi się pod Ciebie. Wszystko zmienisz później w zakładce „Ja”.</p>
+    h = `${STAGE_SVG}<h1 class="h-xl">Cześć, tu Solo.</h1>
+      <p class="onb-lead">Nuty, stroik i metronom w jednym miejscu. Do ćwiczenia w domu i na lekcji.</p>
       <p class="w-legal">Korzystając z Solo, akceptujesz <a href="regulamin.html" data-doc="regulamin">regulamin</a> i&nbsp;<a href="prywatnosc.html" data-doc="prywatnosc">politykę&nbsp;prywatności</a>.</p>`;
     next = "Zaczynamy";
   } else if (name === "instr") {
-    h = `<h2 class="h-l">Na czym grasz?</h2><div id="onb-picker"></div>`;
+    h = `<h2 class="h-l">Na czym grasz?</h2><p class="onb-lead">Możesz wybrać kilka.</p><div id="onb-picker"></div>`;
   } else if (name === "main") {
-    h = `<h2 class="h-l">Główny instrument</h2><div class="onb-grid one">` +
-      p.instruments.map(id => tile(p.main === id, instrById(id).name, `data-main="${id}"`)).join("") + `</div>`;
+    h = `<h2 class="h-l">Który jest główny?</h2><p class="onb-lead">Od niego zaczną się stroik i odtwarzanie.</p><div class="onb-grid one">` +
+      p.instruments.map(id => tile(p.main === id, instrById(id).name, `data-main="${id}"`, "", hueOf(id))).join("") + `</div>`;
   } else if (name === "reading") {
     const m = instrById(p.main), w = NOTE_PL[trPc(m)];
-    h = `<h2 class="h-l">Stroik pokazuje</h2><div class="onb-grid one">` +
-      tile(p.reading === "written", `Zapis dla instrumentu`, `data-read="written"`, `<b class="onb-ex">C → ${w}</b>`) +
-      tile(p.reading === "concert", `Dźwięki rzeczywiste`, `data-read="concert"`, `<b class="onb-ex">C → C</b>`) + `</div>`;
+    h = `<h2 class="h-l">Jak stroik ma nazywać dźwięki?</h2><div class="onb-grid one">` +
+      tile(p.reading === "written", `Tak jak w Twoich nutach`, `data-read="written"`, `<b class="onb-ex">C</b>`, "sky", `C w nutach to C na stroiku`) +
+      tile(p.reading === "concert", `Tak jak brzmią`, `data-read="concert"`, `<b class="onb-ex">${w}</b>`, "sky", `C w nutach to ${w} na stroiku`) + `</div>`;
   } else if (name === "role") {
-    h = `<h2 class="h-l">Kim jesteś?</h2><div class="onb-grid one">` +
-      tile(p.role === "teacher", "Uczę gry", `data-role="teacher"`) + tile(p.role === "student", "Uczę się", `data-role="student"`) + tile(p.role === "self", "Gram dla siebie", `data-role="self"`) + `</div>
-      <h3 class="lbl">Strój A</h3><div class="seg three" id="onb-a4">${[440, 442, 443].map(v => `<button data-a4="${v}" aria-pressed="${p.a4 === v}">${v} Hz</button>`).join("")}</div>
-      `;
+    h = `<h2 class="h-l">Kim jesteś?</h2><p class="onb-lead">Dopasujemy Solo do Ciebie.</p><div class="onb-grid one">` +
+      tile(p.role === "teacher", "Uczę gry", `data-role="teacher"`, `<i class="onb-ic">${icon("music")}</i>`, "violet") + tile(p.role === "student", "Uczę się", `data-role="student"`, `<i class="onb-ic">${icon("note")}</i>`, "green") + tile(p.role === "self", "Gram dla siebie", `data-role="self"`, `<i class="onb-ic">${icon("heart")}</i>`, "amber") + `</div>`;
+  } else if (name === "a4") {
+    h = `<h2 class="h-l">Na jakim stroju grasz?</h2><p class="onb-lead">Nie wiesz? Zostaw 440 Hz.</p>
+      <div class="chips onb-a4" id="onb-a4">${[440, 441, 442, 443].map(v => `<button data-a4="${v}" aria-pressed="${p.a4 === v}">${v} Hz</button>`).join("")}</div>`;
   } else {
     const m = instrById(p.main);
-    h = `<h2 class="h-l">Gotowe</h2>
+    h = `<h2 class="h-l">Gotowe.</h2>
       <div class="onb-sum"><b>${esc(m.name)}</b><span>${esc(profileSummary(p))}</span></div>
-      <div class="onb-own"><svg class="i"><use href="#mic"/></svg><div class="grow"><b>Twój dźwięk</b><small>Solo zagra nuty Twoim brzmieniem.</small></div><button class="btn small tinted" id="onb-own">Nagraj</button></div>`;
+      <div class="onb-own"><svg class="i"><use href="#mic"/></svg><div class="grow"><b>Twoje brzmienie</b><small>Solo zagra nuty Twoim brzmieniem.</small></div><button class="btn small tinted" id="onb-own">Nagraj</button></div>`;
     next = "Zacznij";
   }
   box.innerHTML = h; box.scrollTop = 0;
@@ -224,7 +230,7 @@ $("#onb-body").addEventListener("click", e => {
   if (b.dataset.read) { p.reading = b.dataset.read; renderOnb(); return; }
   if (b.dataset.role) { p.role = b.dataset.role; renderOnb(); return; }
   if (b.dataset.a4) { p.a4 = +b.dataset.a4; renderOnb(); return; }
-  if (b.id === "onb-own") { finishOnb(false); setTimeout(() => openSheet("tuner"), 300); }
+  if (b.id === "onb-own") { finishOnb(false); setTimeout(() => openOwnFlow(), 300); }      // straight to the recording (it no longer lives in the tuner)
 });
 $("#onb-next").addEventListener("click", () => { if (ONB_STEPS[onb.step] === "done") finishOnb(false); else onbGo(1); });
 $("#onb-back").addEventListener("click", () => onbGo(-1));
@@ -265,7 +271,7 @@ function timbreNote(kind) {
 function renderProfile() {
   const box = $("#prof"); if (!box) return;
   const p = profile(), m = instrById(p.main);
-  box.innerHTML = `<div class="ichips">${p.instruments.map(id => `<button class="ichip" data-main="${id}" aria-pressed="${id === p.main}">${esc(instrById(id).name)}</button>`).join("")}<button class="ichip" data-edit aria-label="Zmień instrumenty">${icon("plus")}</button></div>
+  box.innerHTML = `<div class="ichips">${p.instruments.map(id => `<button class="ichip" ${hueStyle(id)} data-main="${id}" aria-pressed="${id === p.main}">${esc(instrById(id).name)}</button>`).join("")}<button class="ichip" data-edit aria-label="Zmień instrumenty">${icon("plus")}</button></div>
     ${p.instruments.length > 1 ? `<p class="sub">Główny: ${esc(m.name)}</p>` : ""}
     ${trPc(m) ? `<h3 class="lbl">Stroik pokazuje</h3><div class="seg"><button data-read="written" aria-pressed="${p.reading === "written"}">Zapis dla instrumentu</button><button data-read="concert" aria-pressed="${p.reading === "concert"}">Dźwięki rzeczywiste</button></div>` : ""}
     <h3 class="lbl">Rola</h3><div class="seg three"><button data-role="teacher" aria-pressed="${p.role === "teacher"}">Uczę</button><button data-role="student" aria-pressed="${p.role === "student"}">Uczę się</button><button data-role="self" aria-pressed="${p.role === "self"}">Dla siebie</button></div>
