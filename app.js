@@ -1,6 +1,6 @@
 /* Solo · interface. Logic for music lives in core.js; this file wires the screens. */
 "use strict";
-const VERSION = "3.9";
+const VERSION = "4.0";
 const BUILD = document.documentElement.dataset.build || "";
 const icon = id => `<svg class="i"><use href="#${id}"/></svg>`;
 const plural = (n, one, few, many) => n === 1 ? one : (n % 10 >= 2 && n % 10 <= 4 && !(n % 100 >= 12 && n % 100 <= 14)) ? few : many;
@@ -113,11 +113,23 @@ const TABS = ["home", "tunerv", "metrov", "settings"];
 function tabShown(v, from) {
   document.body.classList.toggle("tabs", TABS.includes(v)); document.body.classList.toggle("onhome", v === "home");
   $$("#tabbar [data-tab]").forEach(b => b.toggleAttribute("aria-current", b.dataset.tab === v));
+  placeSlide();
   if (from === "tunerv" && v !== "tunerv" && tuner.on) tunerStop();
   if (v === "tunerv") { $("#tuner-tab-host").appendChild($("#tuner-ui")); syncTuner(); syncOwn(); if (!tuner.on && from !== v) tunerStart(); }
   if (v === "metrov") { $("#metro-tab-host").appendChild($("#metro-ui")); buildToolsSheet(); }
   if (v === "settings" && typeof renderProfile === "function") renderProfile();
+  if (v === "settings" && NEWS[VERSION]) { store.set("newsSeen", VERSION); $('#tabbar [data-tab="settings"]')?.classList.remove("dot"); }
 }
+/* the brass slide pill sits behind the current tab and glides to the next one (the one "you are here" mark) */
+function placeSlide() {
+  requestAnimationFrame(() => {                         // after the bar is laid out (it is hidden off the tabs)
+    const bar = $("#tabbar"), cur = bar && bar.querySelector("[aria-current]"), pill = bar && bar.querySelector(".slide"); if (!cur || !pill || !cur.offsetWidth) return;
+    if (!pill.style.width) pill.style.transition = "none";   // the first placement does not glide in from the left
+    pill.style.width = cur.offsetWidth + "px"; pill.style.transform = `translateX(${cur.offsetLeft}px)`;
+    if (pill.style.transition) requestAnimationFrame(() => (pill.style.transition = ""));
+  });
+}
+addEventListener("resize", () => placeSlide());
 function goTab(v) {
   if (v === S.view) { const el = $("#" + v); el && el.scrollTo({ top: 0, behavior: "smooth" }); return; }
   if (openSheetId) closeSheet();
@@ -245,18 +257,30 @@ function openSheet(name) {
   const el = $("#sh-" + name); if (!el) return;
   const switching = !!openSheetId;
   if (switching) hideSheet(true, true); else history.pushState({ v: S.view, sheet: true }, "");
-  ({ clef: buildClefSheet, key: buildKeySheet, more: buildMoreSheet, orig: buildOrigSheet, pages: preparePages, tools: buildToolsSheet, tuner: buildTunerSheet, voice: buildVoiceSheet, partfor: buildPartForSheet, bar: buildBarSheet, practice: buildPracticeSheet, new: buildNewSheet, addpart: buildAddPartSheet, part: buildPartSheet, share: buildShareSheet, instr: () => buildInstrSheet(), col: buildColSheet, addto: buildAddtoSheet, card: syncFavTile, pick: () => buildPickSheet() })[name]?.();
+  ({ clef: buildClefSheet, key: buildKeySheet, more: buildMoreSheet, orig: buildOrigSheet, pages: preparePages, tools: buildToolsSheet, tuner: buildTunerSheet, bar: buildBarSheet, practice: buildPracticeSheet, new: buildNewSheet, addpart: buildAddPartSheet, part: buildPartSheet, share: buildShareSheet, instr: () => buildInstrSheet(), col: buildColSheet, addto: buildAddtoSheet, card: syncFavTile, pick: () => buildPickSheet() })[name]?.();
   openSheetId = name; document.body.classList.toggle("sheet-add", name === "add");
   presentSheet(el, switching);
   if (name === "key") placeHandle(true);
-  const f = el.querySelector(".done, button, input"); if (f && matchMedia("(pointer:fine)").matches) f.focus({ preventScroll: true });
+  /* focus goes into the sheet on every device (VoiceOver read the page behind before), on its title rather than a
+     button, so Enter can never delete; the page behind is inert until the sheet closes, then focus returns */
+  if (!switching) sheetOpener = document.activeElement;
+  setBehindInert(el, true);
+  const h = el.querySelector("h2, h1, .h-m") || el; h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true });
+}
+let sheetOpener = null;
+function setBehindInert(sheet, on) {
+  [...document.body.children].forEach(c => {
+    if (c === sheet || c.id === "scrim" || c.id === "toast" || c.classList.contains("sheet") || c.tagName === "SCRIPT") return;
+    if (on) { if (!c.inert) { c.inert = true; c.dataset.sheetInert = "1"; } } else if (c.dataset.sheetInert) { c.inert = false; delete c.dataset.sheetInert; }
+  });
 }
 function hideSheet(instant, keepScrim) {
   if (openSheetId === "tuner" && tuner.on) tunerStop();
   if (openSheetId === "pdf" && pickPdfPages.cancel) { const c = pickPdfPages.cancel; setTimeout(c, 0); }
   if (!openSheetId) return;
   const name = openSheetId, el = $("#sh-" + name);
-  openSheetId = null; document.body.classList.remove("sheet-add"); if (name === "addpart" && typeof ap !== "undefined") setTimeout(() => { if (openSheetId !== "addpart") ap.replace = null; }, 400);
+  openSheetId = null; setBehindInert(el, false);
+  if (!keepScrim && sheetOpener && sheetOpener.isConnected) { const o = sheetOpener; sheetOpener = null; setTimeout(() => o.focus?.({ preventScroll: true }), 0); } document.body.classList.remove("sheet-add"); if (name === "addpart" && typeof ap !== "undefined") setTimeout(() => { if (openSheetId !== "addpart") ap.replace = null; }, 400);
   const v = sheetVelocity; sheetVelocity = undefined;
   if (instant) {
     ctl(el).spring.stop(); el.hidden = true; el.style.transform = ""; el.classList.remove("out", "pre");
@@ -363,7 +387,7 @@ document.addEventListener("click", e => {
   const a = e.target.closest("[data-act]");
   if (a) {
     const act = a.dataset.act;
-    if (act === "example") { hideWelcome(); openPiece({ xml: exampleXml(), sourceType: "example", title: "", composer: null, instrument: "Puzon" }); }
+    if (act === "example") { hideWelcome(); openPiece(examplePiece()); }
     if (act === "blank") { hideWelcome(); if (openSheetId) closeSheetThen(() => openSheet("new")); else openSheet("new"); }
     if (act === "camera") { if (a.id === "w-camera") store.set("welcomed", "1"); if (openSheetId) closeSheetThen(openCamera); else openCamera(); }
     if (act === "print") closeSheetThen(() => exportParts.length === 1 ? withOnly(exportParts[0], printScore) : exportParts.length ? hud("Do druku wybierz jedną partię albo pobierz PDF", 3500) : printScore());
@@ -391,7 +415,9 @@ async function openDoc(name) {
 document.addEventListener("keydown", e => {
   if (e.key === "Escape" && cam.open) { closeCamera(); return; }
   if (e.key === "Escape" && openSheetId) closeSheet();
-  if (e.key === " " && S.view === "score" && !openSheetId && !/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) { e.preventDefault(); $("#btn-play").click(); }
+  if (e.key === "Escape" && tourI >= 0) { tourEnd(); return; }
+  /* Space plays, except on a focused button (it presses the button) or a field (K40) */
+  if (e.key === " " && S.view === "score" && !openSheetId && !/INPUT|TEXTAREA|SELECT|BUTTON|A/.test(document.activeElement.tagName)) { e.preventDefault(); $("#btn-play").click(); }
 });
 
 /* ---------------- Home / library ---------------- */
@@ -402,34 +428,55 @@ const HERO = [
 ];
 function setupHero() {
   const h = HERO[Math.floor(Date.now() / 86400000) % HERO.length];
-  const img = $("#hero-img");
+  const img = $("#hero-img"); if (!img) return;          // the library has a drawn masthead now
   img.addEventListener("load", () => img.classList.add("loaded"), { once: true });
   img.src = h.src; $("#hero").style.setProperty("--pos", h.pos);
   if (img.complete && img.naturalWidth) img.classList.add("loaded");
 }
 function shortKey(label) { if (!label) return ""; const m = label.match(/^(.+?)-(dur|moll)$/); return m ? m[1] : label; }
+/* a library that cannot be read is never shown as empty ("Tu będą Twoje nuty" would look like everything is gone) */
+function libError(e) {
+  let el = $("#lib-err");
+  if (!e) { if (el) el.hidden = true; return; }
+  console.warn("library", e);
+  if (!el) {
+    el = document.createElement("section"); el.className = "empty"; el.id = "lib-err";
+    el.innerHTML = `<div class="empty-copy"><h2 class="h-l">Nie udało się otworzyć biblioteki</h2><p class="txt">Nuty są w pamięci urządzenia. Spróbuj jeszcze raz. Jeśli to nie pomoże, zamknij Solo i otwórz je ponownie.</p><div class="row-btns"><button class="btn primary" id="lib-retry"><span>Spróbuj jeszcze raz</span></button></div></div>`;
+    $("#lib-empty").after(el); $("#lib-retry").addEventListener("click", () => refreshLibrary());
+  }
+  el.hidden = false; $("#lib").hidden = true; $("#lib-empty").hidden = true;
+}
+document.addEventListener("visibilitychange", () => { if (!document.hidden && S.view === "home" && $("#lib-err") && !$("#lib-err").hidden) refreshLibrary(); });
 async function refreshLibrary(animate) {
-  let all = [];
-  try { all = await DB.all(); } catch {}
-  const q = $("#lib-search").value.trim().toLowerCase();
+  const my = refreshLibrary.n = (refreshLibrary.n || 0) + 1;     // fast typing: an older, slower read never draws over a newer one
+  let all;
+  try { all = await DB.all(); } catch (e) { if (my === refreshLibrary.n) libError(e); return; }
+  if (my !== refreshLibrary.n) return;
+  libError(null);
+  const q = fold($("#lib-search").value.trim());
   const sort = $("#lib-sort").value;
   renderCols(all);
-  const list = all.filter(p => q ? ((p.title || "") + " " + (p.composer || "")).toLowerCase().includes(q) : inCol(p, all));
+  const list = all.filter(p => q ? fold((p.title || "") + " " + (p.composer || "")).includes(q) : inCol(p, all));
   const by = { title: (a, b) => (a.title || "").localeCompare(b.title || "", "pl"), composer: (a, b) => (a.composer || "￿").localeCompare(b.composer || "￿", "pl"),
     created: (a, b) => (b.created || 0) - (a.created || 0), opened: (a, b) => (b.opened || b.updated || 0) - (a.opened || a.updated || 0) };
   list.sort(by[sort] || by.opened);
   const uc = cols().find(c => c.id === libCol);
   if (uc && !q) list.sort((a, b) => uc.items.indexOf(a.id) - uc.items.indexOf(b.id));     // a collection keeps its own order
   $("#col-empty").hidden = !!(list.length || q || libCol === "all");
-  const latest = all.length > 1 ? all.slice().sort(by.opened)[0].id : null;
+  const fav = new Set(favs());
   const G = $("#lib-grid"); G.innerHTML = "";
   G.classList.toggle("stagger", !refreshLibrary.done && canAnimate()); refreshLibrary.done = true;
   list.forEach((p, idx) => {
     const b = document.createElement("div"); b.className = "card"; b.style.setProperty("--i", Math.min(idx, 14));
     const meta = p.composer || (p.sourceType === "ai" || p.sourceType === "device" ? "Ze zdjęcia" : p.sourceType === "example" ? "Przykład" : p.sourceType === "own" ? "Własne" : "Z pliku");
-    b.innerHTML = `<button class="thumb" aria-label="Otwórz: ${esc(p.title || "Bez tytułu")}">${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : `<span class="ph">${esc(p.title || "Bez tytułu")}</span>`}${p.id === latest ? `<i class="ribbon" title="Ostatnio grane"></i>` : ""}</button>
-      <div class="t" role="button" tabindex="0" aria-label="Zmień tytuł">${esc(p.title || "Bez tytułu")}</div><div class="m"><span class="c${p.composer ? "" : " ph"}" role="button" tabindex="0" aria-label="Zmień kompozytora">${esc(meta)}</span>${p.keyLabel ? `<button class="key" aria-label="Tonacja: ${esc(p.keyLabel)}">${esc(shortKey(p.keyLabel))}</button>` : ""}</div>`;
-    b.querySelector(".thumb").addEventListener("click", () => { if (b._long) { b._long = false; return; } openPiece(p, p.settings); });
+    /* the whole card opens the piece (a tap on the title used to start renaming it); renaming and everything else
+       is in the "⋯" menu, which a long press also opens */
+    b.innerHTML = `<button class="thumb" aria-label="Otwórz: ${esc(p.title || "Bez tytułu")}">${p.thumb ? `<img src="${esc(p.thumb)}" alt="">` : `<span class="ph">${esc(p.title || "Bez tytułu")}</span>`}${fav.has(p.id) ? `<i class="fav-badge" aria-hidden="true">${icon("heart-fill")}</i>` : ""}</button>
+      <button class="more" aria-label="Więcej: ${esc(p.title || "Bez tytułu")}">${icon("more")}</button>
+      <div class="t">${esc(p.title || "Bez tytułu")}</div><div class="m"><span class="c${p.composer ? "" : " ph"}">${esc(meta)}</span>${p.keyLabel ? `<span class="key" aria-label="Tonacja: ${esc(p.keyLabel)}">${esc(shortKey(p.keyLabel))}</span>` : ""}</div>`;
+    b.querySelector(".thumb").addEventListener("click", () => { if (b._long) { b._long = false; return; } openFromLibrary(p); });
+    b.querySelector(".more").addEventListener("click", () => openCardSheet(p, b));
+    [".t", ".m"].forEach(sel => b.querySelector(sel).addEventListener("click", () => openFromLibrary(p)));
     { let t = 0; const th = b.querySelector(".thumb");
       /* Haptic Touch: the card sinks while pressed, lifts when the menu comes, settles back with a spring */
       const up = () => { clearTimeout(t); b.classList.remove("pressing"); };
@@ -437,54 +484,57 @@ async function refreshLibrary(animate) {
       ["pointerup", "pointerleave", "pointercancel"].forEach(ev => th.addEventListener(ev, up));
       th.addEventListener("pointermove", e => { if (Math.abs(e.movementY) > 4 || Math.abs(e.movementX) > 4) up(); });
       th.addEventListener("contextmenu", e => { e.preventDefault(); openCardSheet(p, b); }); }
-    const k = b.querySelector(".key"); if (k) k.addEventListener("click", () => { openPiece(p, p.settings); setTimeout(() => S.view === "score" && openSheet("key"), 520); });
-    const edit = (el, field, ph) => inlineEdit(el, { value: p[field] || "", placeholder: ph, onSave: v => renameInLibrary(p, field, v) });
-    const tEl = b.querySelector(".t"), cEl = b.querySelector(".c");
-    tEl.addEventListener("click", () => edit(tEl, "title", "Tytuł"));
-    cEl.addEventListener("click", () => edit(cEl, "composer", "Kompozytor"));
-    [tEl, cEl].forEach(el => el.addEventListener("keydown", e => { if (e.key === "Enter" && e.target === el) { e.preventDefault(); el.click(); } }));
     G.appendChild(b);
   });
   const has = all.length > 0;
   nudgeBackup(all);
-  const nn = $("#news-nudge"); if (nn) nn.hidden = !(all.length && NEWS[VERSION] && store.get("newsSeen") !== VERSION);
+  /* news: a quiet dot on the "Ja" tab instead of a card between the search and the music */
+  const nn = $("#news-nudge"); if (nn) nn.hidden = true;
+  document.querySelector('#tabbar [data-tab="settings"]')?.classList.toggle("dot", !!(all.length && NEWS[VERSION] && store.get("newsSeen") !== VERSION));
   $("#lib").hidden = !has; $("#lib-empty").hidden = has;
-  $("#lib-count").textContent = has ? String(all.length) : "";
+  $("#lib-count").textContent = has ? String(list.length) : "";      // what is shown (filter, search), not everything
   $("#lib-none").hidden = !(has && q && !list.length);
-  $("#lib-none").textContent = `Nic nie pasuje do „${q}”.`;
+  $("#lib-none").textContent = `Nic nie pasuje do „${$("#lib-search").value.trim()}”.`;
+  safariNotice(all);
 }
-/* rename from the library: the record is updated and its cover (which shows the title) redrawn */
+/* rename from the library: the newest record is read again (a save of that piece may have landed since the cards
+   were drawn), then its cover (which shows the title) is redrawn without touching the open piece */
 async function renameInLibrary(p, field, v) {
   if (field === "title" && !v) v = "Bez tytułu";
-  const rec = { ...p, [field]: v, updated: Date.now() };
-  try { await DB.put(rec); } catch { hud("Nie udało się zapisać."); return; }
+  let rec;
+  try { const cur = await DB.get(p.id); if (!cur) { refreshLibrary(); return; } rec = { ...cur, [field]: v, updated: Date.now() }; await DB.put(rec); }
+  catch (e) { console.warn(e); hud(saveErrorText(e), 4000); return; }
+  if (S.piece && S.piece.id === p.id) { S.piece[field] = v; updateTitles(); }
   refreshLibrary();
-  try {
-    const snap = { piece: S.piece, parts: S.parts, srcKey: S.srcKey, srcClef: S.srcClef, clef: S.clef, iv: S.iv, preset: S.preset, bpm: S.bpm, loadedKey: S.loadedKey };
-    loadState(rec, rec.settings);
-    const thumb = await makeThumb();
-    Object.assign(S, snap); S.loadedKey = null;
-    await DB.put({ ...rec, thumb });
-    refreshLibrary();
-  } catch (e) { console.warn(e); }
+  try { const thumb = await makeThumb(thumbXml(rec)); await saveThumb(p.id, thumb); refreshLibrary(); } catch (e) { console.warn(e); }
 }
 $("#lib-search").addEventListener("input", refreshLibrary);
 $("#lib-sort").addEventListener("change", () => { store.set("sort", $("#lib-sort").value); refreshLibrary(); });
 
 /* ---------------- Opening a piece ---------------- */
-const OTHER_INSTR = /tr[aą]bk|klarnet|waltorn|saks|skrzyp|flet|ob[oó]j|trumpet|clarinet|horn|sax|violin|flute|oboe|głos|solo|voice/i;
-function maybeTrombone() { if (!S.piece.instrument || OTHER_INSTR.test(S.piece.instrument)) S.piece.instrument = "Puzon"; }
+/* the example ("Wlazł kotek" with piano) for the player's own instrument: its octave, transposition and clef */
+function examplePiece() {
+  const me = mainInstr();
+  if (me.id === "puzon") return { xml: exampleXml(), sourceType: "example", title: "", composer: null, instrument: me.name };
+  let xml = makePart(readyTuneXml("kotek"), "P1", { role: "melody", instr: me });
+  xml = makePart(xml, "P1", { role: "chords", instr: instrById("fortepian") });
+  const d = parseXml(xml), root = d.documentElement;
+  kids(root, "part").find(p => p.getAttribute("id") === "P1").remove(); kids(kid(root, "part-list"), "score-part").find(p => p.getAttribute("id") === "P1").remove();
+  return { xml: new XMLSerializer().serializeToString(d), sourceType: "example", title: "", composer: null, instrument: me.name };
+}
 /* the piece's state (parts, key, clef, transposition, tempo) without touching the screen */
 function loadState(piece, settings) {
   const info = analyseXml(piece.xml);
   S.piece = { ...piece, title: piece.title || info.title || "Bez tytułu", composer: piece.composer ?? info.composer ?? "" };
   S.parts = info.parts; S.srcKey = info.key;
-  const first = S.parts.find(p => p.keep) || S.parts[0];
+  S.melody = settings && settings.melody && S.parts.some(p => p.id === settings.melody) ? settings.melody : guessMelody(piece.xml, S.parts, piece.instrument);
+  const first = S.parts.find(p => p.id === S.melody) || S.parts.find(p => p.keep) || S.parts[0];
   S.srcClef = first ? first.clef : "treble";
+  if (first && first.id !== (info.parts.find(p => p.keep) || {}).id) S.srcKey = analyseXml(piece.xml, first.id).key;
   S.clef = "keep"; S.iv = { d: 0, s: 0 }; S.preset = -1; S.bpm = null; S.clefMine = false;
   /* T12: a scanned piece keeps the bars per line of the paper ("Jak w oryginale"), others fit the screen */
   S.hasLines = /<print[^>]*new-system="yes"/.test(piece.xml || "");
-  S.layout = S.hasLines ? "orig" : "fit"; S.page = "a4"; S.pz = 1; S.readOct = 0; S.under = ""; S.swing = false;
+  S.layout = S.hasLines ? "orig" : "fit"; S.page = "a4"; S.pageMine = false; S.pz = 1; S.readOct = 0; S.under = ""; S.swing = false;
   if (settings) {
     if (Array.isArray(settings.keep)) S.parts.forEach(p => (p.keep = settings.keep.includes(p.id)));
     if (!S.parts.some(p => p.keep)) S.parts.forEach(p => (p.keep = true));
@@ -501,9 +551,11 @@ function loadState(piece, settings) {
     else if (S.iv && (S.iv.d || S.iv.s)) { const s12 = S.iv.s, oc = Math.trunc(s12 / 12); if (oc && Math.abs(s12 % 12) <= 6) { S.iv = { d: S.iv.d - 7 * oc, s: s12 - 12 * oc }; S.readOct = oc; } }
     if (settings.layout === "orig" || settings.layout === "fit") S.layout = settings.layout;
     if (settings.page === "a4" || settings.page === "screen") S.page = settings.page;
+    S.pageMine = !!settings.pageMine;
     S.under = settings.under === "chord" || settings.under === "fn" ? settings.under : ""; S.swing = !!settings.swing;
   }
   if (S.piece.instrument == null) S.piece.instrument = first && !PIANO_RE.test(first.name) ? first.name : "";
+  const rp = S.parts.find(p => p.id === readingPartId()); if (rp) S.srcClef = rp.clef;     // the clef of the part being read
 }
 /* the music must sit on the staff: if most notes of the part being read are far off it (an old setting, a wrong
    octave), the octave that fits is taken and the player is told */
@@ -513,13 +565,61 @@ function declaredOf(pid) {
   if (!S.piece) return null; if (declaredOf.xml !== S.piece.xml) { declaredOf.xml = S.piece.xml; declaredOf.map = {}; [...parseXml(S.piece.xml).getElementsByTagName("score-part")].forEach(sp => { const i = declaredInstr(sp); if (i) declaredOf.map[sp.getAttribute("id")] = i; }); }
   return declaredOf.map[pid] || null;
 }
-function namedInstr(pid) {
-  const dec = declaredOf(pid); if (dec) return dec;
-  const p = S.parts && S.parts.find(x => x.id === pid); if (!p || p.staves > 1 || PIANO_RE.test(p.name)) return null;
-  const names = [(typeof partLabel === "function" ? partLabel(p) : p.name) || "", S.piece && S.piece.instrument || ""].map(n => n.replace(/ (I|II|III|IV|V)$/, "").trim().toLowerCase());
-  for (const n of names) { const hit = n && INSTRUMENTS.find(i => i.name.toLowerCase() === n); if (hit) return hit; }
-  return null;
+function namedInstr(pid) { return partInstr(pid).ins; }
+/* One decision per part, used by playback (concert pitch, timbre), the range tint and the clef check:
+   the declared instrument → the part's name (Polish or English, with or without Polish letters) → the piece's
+   instrument. The transposition comes from the file's own <transpose> when it has one (Verovio's MIDI values are
+   the written notes: it ignores <transpose>), else from the instrument. Cached per score, so a render or a play
+   parses the score once, not once per note. */
+const plain = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/ł/g, "l").replace(/\s+/g, " ").trim();
+const EN_INSTR = [[/piccolo/, "piccolo"], [/alto flute/, "flet-a"], [/recorder/, "flet-p"], [/flute|flauto/, "flet"], [/english horn|cor anglais/, "rozek"], [/oboe/, "oboj"],
+  [/bass clarinet/, "klarnet-bas"], [/clarinet (in )?a\b/, "klarnet-a"], [/clarinet (in )?(e♭|eb|es)\b/, "klarnet-es"], [/clarinet/, "klarnet"], [/contrabassoon/, "kontrafagot"], [/bassoon/, "fagot"],
+  [/soprano sax/, "sax-s"], [/alto sax/, "sax-a"], [/tenor sax/, "sax-t"], [/bari(tone)? sax/, "sax-b"], [/flugel/, "flugelhorn"], [/cornet/, "kornet"], [/trumpet (in )?c\b/, "trabka-c"], [/trumpet/, "trabka"],
+  [/horn/, "waltornia"], [/bass trombone/, "puzon-b"], [/alto trombone/, "puzon-alt"], [/trombone/, "puzon"], [/euphonium/, "eufonium"], [/baritone/, "baryton"], [/tuba/, "tuba"], [/sousaphone/, "suzafon"],
+  [/violin/, "skrzypce"], [/viola/, "altowka"], [/cello/, "wiolonczela"], [/double bass|contrabass|string bass/, "kontrabas"], [/bass guitar|electric bass/, "gitara-bas"], [/guitar/, "gitara"],
+  [/glockenspiel/, "dzwonki"], [/xylophone/, "ksylofon"], [/vibraphone/, "wibrafon"]];
+function instrByName(name) {
+  const n = plain(String(name || "").replace(/ (I|II|III|IV|V|VI|\d)$/, "")); if (!n) return null;
+  const en = EN_INSTR.find(([re]) => re.test(n));
+  return INSTRUMENTS.find(i => plain(i.name) === n) || INSTRUMENTS.find(i => n.length >= 4 && plain(i.name).startsWith(n)) ||
+    INSTRUMENTS.find(i => n.startsWith(plain(i.name) + " ")) || (en && INSTRUMENTS.find(i => i.id === en[1])) || null;
 }
+/* the score's part names and <transpose> elements, read once per score */
+function scoreParts() {
+  const xml = S.piece ? S.piece.xml : "", c = scoreParts.c; if (c && c.xml === xml) return c;
+  const out = { xml, names: {}, tr: {} };
+  try {
+    const doc = parseXml(xml);
+    [...doc.getElementsByTagName("score-part")].forEach(sp => { out.names[sp.getAttribute("id")] = txt(sp, "part-name"); });
+    [...doc.getElementsByTagName("part")].forEach(p => {
+      const t = p.getElementsByTagName("transpose")[0]; if (!t) return;
+      /* written = sounding + tr (B♭ trumpet: chromatic −2 → tr 2; tenor sax: −2 and octave −1 → 14) */
+      out.tr[p.getAttribute("id")] = -((parseInt(txt(t, "chromatic"), 10) || 0) + 12 * (parseInt(txt(t, "octave-change"), 10) || 0));
+    });
+  } catch (e) { console.warn(e); }
+  return (scoreParts.c = out);
+}
+function partInstr(pid) {
+  const xml = S.piece ? S.piece.xml : "", instr = S.piece ? S.piece.instrument : "";
+  let c = partInstr.c; if (!c || c.xml !== xml || c.instr !== instr || c.parts !== S.parts) c = partInstr.c = { xml, instr, parts: S.parts, m: new Map() };
+  if (c.m.has(pid)) return c.m.get(pid);
+  let r = { ins: null, tr: 0, piano: false };
+  const dec = declaredOf(pid), p = S.parts && S.parts.find(x => x.id === pid);
+  if (dec) r.ins = dec;
+  else if (p && (p.staves > 1 || PIANO_RE.test(p.name))) r.piano = true;
+  else if (p) {
+    const label = typeof partLabel === "function" ? partLabel(p) : p.name;
+    /* a part nothing names is not the player's instrument; the piece's instrument names only the melody */
+    r.ins = (typeof instrFromName === "function" && instrFromName(label)) || instrByName(label) ||
+      (pid === melodyPart() ? (typeof instrFromName === "function" && instrFromName(instr)) || instrByName(instr) : null);
+  }
+  const xt = scoreParts().tr[pid];
+  r.tr = !r.piano && xt !== undefined ? xt : r.ins ? r.ins.tr || 0 : 0;
+  c.m.set(pid, r); return r;
+}
+/* a phone shows big notes that fit the screen: an A4 page there is under half its paper size (7.2 mm staff ≈ 13 px);
+   A4 stays the view on a tablet and whenever the player picked it */
+function fitPageToDevice() { if (!S.pageMine && Math.min(innerWidth, screen.width || innerWidth) < 600) S.page = "screen"; }
 function ensureOnStaff() {
   try {
     /* a clef the instrument is never written in (trombone in treble, left by an older version) becomes its own clef;
@@ -536,7 +636,11 @@ function ensureOnStaff() {
 }
 function openPiece(piece, settings) {
   stopPlayback();
+  if (saveTimer && S.piece) savePiece();          // the last edit of the piece on screen is saved (its record is taken now)
+  /* nothing of the previous piece's view carries over: "only this part", the correcting view, the input length */
+  S.only = null; S.keepBefore = null; S.editView = null; S.edTab = null; S.inLen = null;
   try { loadState(piece, settings); } catch (e) { hud(e.message || "Nie udało się otworzyć nut.", 4000); return; }
+  fitPageToDevice();
   const refit = !!ensureOnStaff();
   S.dirty = refit && !!S.piece.id; S.thumbDirty = !piece.thumb || refit; S.loadedKey = null;
   S.piece.opened = Date.now();
@@ -545,15 +649,16 @@ function openPiece(piece, settings) {
   if (S.piece.issues && S.piece.issues.length) {
     const nums = doubtfulBars(S.piece.issues), n = nums.length;
     $("#notice-title").textContent = n ? `${n} ${plural(n, "takt", "takty", "taktów")} do sprawdzenia` : "Sprawdź ze zdjęciem";
-    $("#notice-text").textContent = n ? `Zaznaczone na czerwono: ${nums.slice(0, 8).join(", ")}${n > 8 ? " i inne" : ""}. Porównaj je ze zdjęciem.` : "Odczyt może zawierać błędy.";
+    $("#notice-text").textContent = n ? `Zaznaczone na fioletowo: ${nums.slice(0, 8).join(", ")}${n > 8 ? " i inne" : ""}. Porównaj je ze zdjęciem.` : "Odczyt może zawierać błędy.";
   }
   updateTitles();
-  $("#peek").hidden = true; pb.loop = null; pb.pick = false; pb.mute.clear(); pb.resumeMs = 0; $("#loopbar").hidden = true; $("#btn-loop").setAttribute("aria-pressed", "false"); S.undo = []; S.editSel = null; S.keepSel = null; S.editMode = false; $("#editbar").hidden = true; document.body.classList.remove("editing", "editmode"); $("#btn-edit").setAttribute("aria-pressed", "false");
+  S.only = null; S.keepBefore = null;              // "Tylko ta" belongs to the piece it was used in
+  $("#peek").hidden = true; pb.loop = null; pb.trainer = null; pb.mute.clear(); pb.resumeMs = 0; $("#loopbar").hidden = true; $("#btn-loop").setAttribute("aria-pressed", "false"); S.undo = []; S.redo = []; S.editSel = null; S.keepSel = null; S.editMode = false; $("#editbar").hidden = true; document.body.classList.remove("editing", "editmode"); $("#btn-edit").setAttribute("aria-pressed", "false");
   $("#pages").innerHTML = `<div class="loading-page"><span class="spinner"></span></div>`;
   $("#scroller").scrollTop = 0;
   if (S.view !== "score") go("score");
   render();
-  if (piece.id) DB.put({ ...recordFromState(), thumb: piece.thumb || null }).catch(() => {}); // remember "opened"
+  if (piece.id) DB.put({ ...recordFromState(), thumb: piece.thumb || null }).catch(e => console.warn(e)); // remember "opened"
   else if (piece.sourceType !== "example") savePiece();
 }
 function curKeyName() { return keyName(S.srcKey.fifths + intervalFifths(S.iv), S.srcKey.mode); }
@@ -584,32 +689,66 @@ function recordFromState() {
     title: S.piece.title || "Bez tytułu", composer: S.piece.composer || "", instrument: S.piece.instrument || "",
     xml: S.piece.xml, sourceType: S.piece.sourceType || "file", images: S.piece.images || [], aiJson: S.piece.aiJson || null,
     issues: S.piece.issues || [], lines: S.piece.lines || null, origXml: S.piece.origXml || null, created: S.piece.created || now, updated: S.dirty ? now : (S.piece.updated || now), opened: S.piece.opened || now,
-    settings: { keep: S.parts.filter(p => p.keep).map(p => p.id), clef: (S.editView || S).clef, iv: (S.editView || S).iv, preset: (S.editView || S).preset, bpm: S.bpm, zoom: (S.editView || S).zoom, pz: S.pz, readOct: (S.editView || S).readOct || 0, clefMine: !!S.clefMine, layout: S.layout, page: (S.editView || S).page, under: S.under || "", swing: !!S.swing },
+    settings: { melody: S.melody || null, keep: S.parts.filter(p => p.keep).map(p => p.id), clef: (S.editView || S).clef, iv: (S.editView || S).iv, preset: (S.editView || S).preset, bpm: S.bpm, zoom: (S.editView || S).zoom, pz: S.pz, readOct: (S.editView || S).readOct || 0, pageMine: !!S.pageMine, clefMine: !!S.clefMine, layout: S.layout, page: (S.editView || S).page, under: S.under || "", swing: !!S.swing },
     keyLabel: curKeyName(), clefLabel: CLEF_PL[curClef()] || "", thumb: S.piece.thumb || null
   };
 }
-let saveTimer = null;
+let saveTimer = null, saving = null;
+/* a card drawn before the last save of its piece landed shows an older record: open the saved one */
+async function openFromLibrary(p) {
+  if (saving) { await saving; p = (await DB.get(p.id).catch(() => null)) || p; }
+  openPiece(p, p.settings);
+}
 function autosave() { clearTimeout(saveTimer); saveTimer = setTimeout(savePiece, 500); }
+/* the record is taken before any wait: by the time the database answers another piece may be open */
 async function savePiece() {
-  clearTimeout(saveTimer);
-  if (!S.piece) return;
-  const rec = recordFromState();
-  try { await DB.put(rec); }
-  catch { hud("Brak miejsca na urządzeniu. Usuń niepotrzebne nuty.", 4000); return; }
-  S.piece.id = rec.id; S.piece.created = rec.created; S.piece.updated = rec.updated; S.dirty = false;
+  clearTimeout(saveTimer); saveTimer = null;
+  if (!S.piece) return false;
+  const piece = S.piece, rec = recordFromState(), job = putRecord(rec);
+  saving = job; job.finally(() => { if (saving === job) saving = null; });
+  if (!(await job)) return false;
+  piece.id = rec.id; piece.created = rec.created; piece.updated = rec.updated; if (S.piece === piece) S.dirty = false;
   if (!store.get("persisted")) { try { navigator.storage?.persist?.().then(ok => ok && store.set("persisted", "1")); } catch {} }
   if (!DB.ok) hud("Ta przeglądarka nie pozwala zapisywać. Nuty znikną po zamknięciu.", 4000);
+  return true;
+}
+async function putRecord(rec) {
+  try { await DB.put(rec); return true; }
+  catch (e) { console.warn("save", e); hud(saveErrorText(e), 4500); return false; }
+}
+/* the cover of a piece from its record, without leaving that piece in S: the music for it is prepared in one go
+   (nothing can run in between), the slow drawing works from that text */
+const thumbSrc = () => ({ xml: processedXml(), opts: a4Options({}, 1), key: curKeyName() });
+function thumbXml(rec) {
+  const keys = Object.keys(S), saved = { ...S };
+  try { loadState(rec, rec.settings); return thumbSrc(); }
+  finally { keys.forEach(k => (S[k] = saved[k])); Object.keys(S).forEach(k => { if (!(k in saved)) delete S[k]; }); S.loadedKey = null; }
+}
+/* only the cover changes: the newest record is read again, so a rename or a later save is never undone */
+async function saveThumb(id, thumb, more) {
+  try { const cur = await DB.get(id); if (!cur) return; await DB.put({ ...cur, ...more, thumb }); }      // deleted meanwhile: stays deleted
+  catch (e) { console.warn(e); }
 }
 async function leaveScore() {
   stopPlayback();
   if (!S.piece) return;
+  /* left while correcting (back arrow instead of ✓): the view the player chose goes back before saving */
+  if (S.editView) { Object.assign(S, S.editView); S.editView = null; S.editMode = false; S.loadedKey = null; }
   const needSave = S.piece.id || S.dirty;
-  if (S.piece.sourceType === "example" && !S.piece.id && !S.dirty) return;
-  await settle(); await idle();               // heavy work only after the screen has settled
-  if (S.thumbDirty && needSave) {
-    try { S.piece.thumb = await makeThumb(); S.thumbDirty = false; } catch (e) { console.warn(e); }
-  }
-  if (needSave) { await savePiece(); if (S.view === "home") refreshLibrary(); }
+  if (S.piece.sourceType === "example" && !S.piece.id && !S.dirty) { clearTimeout(saveTimer); saveTimer = null; return; }
+  if (!needSave) return;
+  const piece = S.piece, wantThumb = S.thumbDirty, rec = recordFromState();
+  if (!(await savePiece())) return;               // at once: an edit made just before leaving is kept
+  if (S.view === "home") refreshLibrary();
+  if (!wantThumb) return;
+  await settle(); await idle();                   // heavy drawing only after the screen has settled
+  try {
+    /* another piece may be open by now: the cover is made from the record taken when leaving */
+    const thumb = await makeThumb(S.piece === piece ? thumbSrc() : thumbXml({ ...rec, id: piece.id }));
+    if (S.piece === piece) { piece.thumb = thumb; S.thumbDirty = false; }
+    await saveThumb(piece.id, thumb);
+    if (S.view === "home") refreshLibrary();
+  } catch (e) { console.warn(e); }
 }
 
 /* ---------------- Rendering ---------------- */
@@ -633,13 +772,17 @@ function enlargeTitle(root, factor, shift = 1.25) {
   tr.querySelectorAll("tspan[font-size]").forEach(t => { const v = parseFloat(t.getAttribute("font-size")); if (v) t.setAttribute("font-size", Math.round(v * factor) + "px"); });
 }
 let renderTimer = null;
-function render() { clearTimeout(renderTimer); renderTimer = setTimeout(doRender, 40); }
+/* while the key slider is being dragged the music is drawn at most every 250 ms (a full drawing per key step made
+   the drag stutter); the last key is drawn when the finger stops */
+function render() { clearTimeout(renderTimer); let drag = false; try { drag = slider.dragging; } catch {} renderTimer = setTimeout(doRender, drag ? 250 : 40); }
 async function doRender() {
   if (!S.piece || S.view !== "score") return;
   if ($("#score").hidden) { renderTimer = setTimeout(doRender, 30); return; }
   await settle();                               // let the push animation finish before the heavy render
   await engineReady;
-  stopPlayback();
+  /* a rotation, a zoom or a new key re-draws the music: playing carries on from the same place (no count-in) */
+  const resumeAt = playState && !S.editMode ? playPos() : null;
+  if (playState || pb.preparing) stopPlayback();
   const box = $("#pages");
   const width = Math.min(960, box.parentElement.clientWidth) - 28;
   /* A4 pages, as on paper on every screen; "Dopasuj do ekranu" is the option for bigger notes */
@@ -669,6 +812,7 @@ async function doRender() {
     requestAnimationFrame(() => { drawLoop(); syncLoopUi(); });
     S.baseBpm = scoreBpm(); $("#tp-bpm").textContent = String(curBpm());
     if (openSheetId === "more") syncTempo();
+    if (resumeAt !== null) setTimeout(() => { if (!playState && !pb.preparing && S.view === "score") play(resumeAt, { noCount: true }); }, 0);
   } catch (e) {
     console.error(e);
     box.innerHTML = `<div class="page-msg">${esc(e.message || "Nie udało się narysować nut.")}</div>`;
@@ -747,7 +891,7 @@ function selectNote(sel) {
   $("#btn-edit").setAttribute("aria-pressed", String(on)); $("#btn-edit").innerHTML = icon(on ? "check" : "pencil");
   $("#editbar").hidden = !on;
   $$("#pages g.nsel").forEach(g => g.classList.remove("nsel"));
-  $("#ed-undo").disabled = !(S.undo && S.undo.length);
+  $("#ed-undo").disabled = !(S.undo && S.undo.length); syncRedo();
   if (!S.edTab) edTab(sel ? "pitch" : "len");
   const at = sel ? xmlNoteAt(parseXml(S.piece.xml), sel) : null, n = at && at.n, isRest = !!(n && kid(n, "rest"));
   $$("#editbar .ed-pane:not([data-pane=len]) button").forEach(b => (b.disabled = !n || (isRest && !["rest", "delete", "left", "right"].includes(b.dataset.ed))));
@@ -759,19 +903,20 @@ function selectNote(sel) {
   const el = drawnNote(sel); if (el) el.classList.add("nsel");
   const p = kid(n, "pitch"), len = LEN_PL[txt(n, "type")] || "";
   if (p) {
-    const midi = midiOf(p), oct = Math.floor(midi / 12) - 1;
-    $("#ed-info").innerHTML = `<b>${NOTE_PL[((midi % 12) + 12) % 12]}</b> ${OCTAVE_NAMES[oct] || ""} · ${len}${kid(n, "dot") ? " z kropką" : ""} · takt ${sel.bar}`;
+    /* the name as written (Dis is not Es, Ces is not H), Polish style; the octave of the written letter (his małe) */
+    const oct = parseInt(txt(p, "octave"), 10);
+    $("#ed-info").innerHTML = `<b>${plName(txt(p, "step"), Math.round(parseFloat(txt(p, "alter")) || 0))}</b> ${OCTAVE_NAMES[oct] || ""} · ${len}${kid(n, "dot") ? " z kropką" : ""} · takt ${sel.bar}`;
   } else $("#ed-info").innerHTML = `<b>Pauza</b> · ${len || "cały takt"} · takt ${sel.bar}`;
 }
 /* the sound of a note when it is placed or changed */
-let previewCtx = null;
 function previewNote(n) {
   const p = n && kid(n, "pitch"); if (!p) return;
   try {
-    const AC = window.AudioContext || window.webkitAudioContext; previewCtx = previewCtx || new AC(); previewCtx.resume?.();
-    const g = previewCtx.createGain(); g.gain.value = 0.16; g.connect(previewCtx.destination);
-    const t = previewCtx.currentTime + 0.02; voiceForPart(S.editSel && S.editSel.pid)(previewCtx, g, 440 * Math.pow(2, (midiOf(p) - partTr(S.editSel && S.editSel.pid) - 69) / 12), t, t + 0.4);
-  } catch {}
+    const ctx = fxCtx(), pid = S.editSel && S.editSel.pid;                // the shared context (suspended when quiet)
+    const g = ctx.createGain(); g.gain.value = 0.16; g.connect(ctx.destination);
+    const t = ctx.currentTime + 0.02; voiceForPart(pid)(ctx, g, (tuner.a4 || 440) * Math.pow(2, (midiOf(p) - partTr(pid) - 69) / 12), t, t + 0.4);
+    setTimeout(() => { try { g.disconnect(); } catch {} }, 1200);
+  } catch (e) { console.warn(e); }
 }
 /* which written note a height on the staff means: the five lines of the tapped staff give the steps */
 function pitchAtY(staff, y, part, m) {
@@ -797,13 +942,15 @@ function editTap(e) {
   const room = parseFloat(txt(n, "duration")) || cap, len = ED_LEN[want] * div <= room + 1e-6 ? want : ED_TYPES.slice().reverse().find(t => ED_LEN[t] * div <= room + 1e-6) || "16th";
   kid(n, "duration").textContent = String(ED_LEN[len] * div);
   let ty = kid(n, "type"); if (!ty) { ty = doc.createElement("type"); kid(n, "voice") ? kid(n, "voice").after(ty) : kid(n, "duration").after(ty); } ty.textContent = len;
-  kids(n, "dot").forEach(d => d.remove());
+  kids(n, "dot").forEach(d => d.remove()); plainLen(n);
   fitBar(doc, at.part, at.m, n);
-  /* writing in the last bar: there is always one empty bar ready after it */
+  /* writing your own melody in its last bar: one empty bar is ready after it (the final double bar moves with it);
+     a scan or a file keeps its bars */
   const ms = kids(at.part, "measure");
-  if (at.m === ms[ms.length - 1]) [...doc.getElementsByTagName("part")].forEach(part => {
-    const last = kids(part, "measure").pop(), nm = doc.createElement("measure"), rr = restNote(doc, barCap(part, last).cap, "", 1);
-    kid(rr, "rest").setAttribute("measure", "yes"); nm.setAttribute("number", String(kids(part, "measure").length + 1)); nm.appendChild(rr); last.after(nm);
+  if (at.m === ms[ms.length - 1] && S.piece.sourceType === "own") [...doc.getElementsByTagName("part")].forEach(part => {
+    const last = kids(part, "measure").pop(), nm = emptyBar(doc, part, last);
+    nm.setAttribute("number", String(kids(part, "measure").length + 1)); last.after(nm);
+    const fin = kids(last, "barline").find(b => (b.getAttribute("location") || "right") === "right" && !kid(b, "repeat")); if (fin) nm.appendChild(fin);
   });
   pushUndo(); S.piece.xml = new XMLSerializer().serializeToString(doc);
   previewNote(n); S.editSel = sel; afterEdit();
@@ -823,54 +970,141 @@ function barCap(part, m) {
   return { div, cap: div * 4 * beats / bt };
 }
 const divisionsAt = (part, m) => barCap(part, m).div;
-function restNote(doc, dur, type, voice) {
+function restNote(doc, dur, type, voice, staff) {
   const r = doc.createElement("note");
-  r.innerHTML = `<rest/><duration>${dur}</duration><voice>${voice || 1}</voice>` + (type ? `<type>${type}</type>` : "");
+  r.innerHTML = `<rest/><duration>${dur}</duration><voice>${voice || 1}</voice>` + (type ? `<type>${type}</type>` : "") + (staff ? `<staff>${staff}</staff>` : "");
   return r;
 }
+/* an empty bar after m (a whole-bar rest; both staves of a piano part) */
+function emptyBar(doc, part, m) {
+  const { cap } = barCap(part, m), two = twoStaff(part), nm = doc.createElement("measure");
+  nm.innerHTML = `<note><rest measure="yes"/><duration>${cap}</duration><voice>1</voice>${two ? "<staff>1</staff>" : ""}</note>` + (two ? `<backup><duration>${cap}</duration></backup><note><rest measure="yes"/><duration>${cap}</duration><voice>5</voice><staff>2</staff></note>` : "");
+  return nm;
+}
+/* a length set by hand is a plain length: no triplet mark left on it (its sound and its look would disagree) */
+function plainLen(n) {
+  kids(n, "time-modification").forEach(x => x.remove());
+  const no = kid(n, "notations"); if (no) { kids(no, "tuplet").forEach(x => x.remove()); if (!no.children.length) no.remove(); }
+}
 /* after a note gets shorter or longer the bar still adds up: the rests right after it are taken away
-   and the gap is filled again, each rest starting on its beat (as printed music does); simple one-voice bars only */
+   and the gap is filled again, each rest starting on its beat (as printed music does). In a bar with two voices
+   (<backup>) only the edited note's own voice is fitted. */
 function fitBar(doc, part, m, after) {
-  if (kids(m, "backup").length) return;
   const { div, cap } = barCap(part, m), len = n => (kid(n, "chord") || kid(n, "grace")) ? 0 : (parseFloat(txt(n, "duration")) || 0);
-  for (let nx = after.nextElementSibling; nx && !(nx.tagName === "note" && !kid(nx, "rest"));) {
-    const next = nx.nextElementSibling; if (nx.tagName === "note" && !kid(nx, "chord")) nx.remove(); nx = next;
+  const all = [...m.children], i0 = all.indexOf(after), voice = txt(after, "voice") || "1", staff = txt(after, "staff");
+  let a = i0, b = i0; while (a > 0 && all[a - 1].tagName !== "backup") a--; while (b < all.length - 1 && all[b + 1].tagName !== "backup") b++;
+  const seg = new Set(all.slice(a, b + 1)), mine = el => seg.has(el) && el.tagName === "note" && (txt(el, "voice") || "1") === voice;
+  const notes = () => [...m.children].filter(mine);
+  for (let nx = after.nextElementSibling; nx && seg.has(nx) && !(mine(nx) && !kid(nx, "rest"));) {
+    const next = nx.nextElementSibling; if (mine(nx) && !kid(nx, "chord")) nx.remove(); nx = next;
   }
-  let total = kids(m, "note").reduce((a, n) => a + len(n), 0);
-  for (let nx = after.nextElementSibling; total > cap + 1e-6 && nx;) {           // still too long: rests further on go
+  let total = notes().reduce((s, n) => s + len(n), 0), later = false;
+  for (let nx = after.nextElementSibling; total > cap + 1e-6 && nx && seg.has(nx);) {           // still too long: rests further on go
     const next = nx.nextElementSibling;
-    if (nx.tagName === "note" && kid(nx, "rest") && !kid(nx, "chord")) { total -= len(nx); nx.remove(); }
+    if (mine(nx) && kid(nx, "rest") && !kid(nx, "chord")) { total -= len(nx); nx.remove(); later = true; }
     nx = next;
   }
-  let pos = 0; for (const n of kids(m, "note")) { pos += len(n); if (n === after) break; }
-  let gap = cap - total, at = after;
+  /* what is left over after rests further on went is filled at the end of the bar (after the voice's last note) */
+  const end = later ? notes().filter(x => !kid(x, "chord")).pop() : after;
+  let pos = 0; for (const n of notes()) { pos += len(n); if (n === end) break; }
+  let gap = cap - total, at = end;
   /* rests show the beat (Gould): each starts where its own length divides the bar; in 6/8, 9/8, 12/8 a whole beat is
      a dotted quarter rest; in 4/4 a half rest only on beat 1 or 3 (the alignment rule gives that) */
   const t8 = (() => { let b = 4, t = 4; for (const mm of kids(part, "measure")) { kids(mm, "attributes").forEach(a => { const x = kid(a, "time"); if (x) { b = parseInt(txt(x, "beats"), 10) || b; t = parseInt(txt(x, "beat-type"), 10) || t; } }); if (mm === m) break; } return t === 8 && b % 3 === 0; })();
   const opts = [["whole", 4, false], ...(t8 ? [["half", 3, true], ["quarter", 1.5, true]] : []), ["half", 2, false], ["quarter", 1, false], ["eighth", 0.5, false], ["16th", 0.25, false]];
   while (gap > 1e-6) {
-    const o = opts.find(([t, q]) => { const d = q * div; return d <= gap + 1e-6 && Math.abs(pos / d - Math.round(pos / d)) < 1e-6 && !(t8 && t === "quarter" && q === 1 && Math.abs(pos / (1.5 * div) - Math.round(pos / (1.5 * div))) < 1e-6 && gap >= 1.5 * div - 1e-6); });
+    /* in 6/8 a quarter rest also fills the rest of a beat after its first eighth (♪ 𝄽) */
+    const endsBeat = q => t8 && q === 1 && Math.abs((pos / div + 1) / 1.5 - Math.round((pos / div + 1) / 1.5)) < 1e-6;
+    const o = opts.find(([t, q]) => { const d = q * div; return d <= gap + 1e-6 && (Math.abs(pos / d - Math.round(pos / d)) < 1e-6 || endsBeat(q)) && !(t8 && t === "quarter" && q === 1 && Math.abs(pos / (1.5 * div) - Math.round(pos / (1.5 * div))) < 1e-6 && gap >= 1.5 * div - 1e-6); });
     if (!o) break;
-    const [t, q, dot] = o, d = q * div, r = restNote(doc, d, t, txt(after, "voice"));
+    const [t, q, dot] = o, d = q * div, r = restNote(doc, d, t, voice, staff);
     if (dot) kid(r, "type").after(doc.createElement("dot"));
-    at.after(r); at = r; gap -= d; pos += d;
+    while (at.nextElementSibling && kid(at.nextElementSibling, "chord")) at = at.nextElementSibling;    // after a chord's last note
+    at.after(r); seg.add(r); at = r; gap -= d; pos += d;
   }
+  return total <= cap + 1e-6;
 }
+/* a note longer than the room left in its bar is tied over the barline (Gould: never hide the barline), taking the
+   place of rests at the start of the next bar; false when it cannot (notes there, two voices, a chord) */
+function tieOver(doc, part, m, n) {
+  const { div, cap } = barCap(part, m), len = x => (kid(x, "chord") || kid(x, "grace")) ? 0 : (parseFloat(txt(x, "duration")) || 0);
+  const notes = kids(m, "note"), over = notes.reduce((s, x) => s + len(x), 0) - cap; if (over <= 1e-6) return true;
+  if (kids(m, "backup").length || !kid(n, "pitch") || (n.nextElementSibling && kid(n.nextElementSibling, "chord"))) return false;
+  if (notes.slice(notes.indexOf(n) + 1).some(x => !kid(x, "chord") && len(x) > 0)) return false;
+  const ms = kids(part, "measure"), nx = ms[ms.indexOf(m) + 1]; if (!nx || kids(nx, "backup").length) return false;
+  let room = 0; for (const e of kids(nx, "note")) { if (kid(e, "chord")) continue; if (!kid(e, "rest")) break; room += len(e); }
+  if (room + 1e-6 < over || len(n) - over < div / 4 - 1e-6) return false;
+  const tieIn = [...n.getElementsByTagName("tie")].some(t => t.getAttribute("type") === "stop"), tieOut = [...n.getElementsByTagName("tie")].some(t => t.getAttribute("type") === "start");
+  const piece = (q, val, first, last) => {
+    const c = n.cloneNode(true);
+    [...c.getElementsByTagName("tie")].forEach(x => x.remove()); [...c.getElementsByTagName("tied")].forEach(x => x.remove()); kids(c, "dot").forEach(x => x.remove()); plainLen(c);
+    if (!first) { kids(c, "accidental").forEach(x => x.remove()); kids(c, "lyric").forEach(x => x.remove()); const no = kid(c, "notations"); if (no) no.remove(); }
+    kid(c, "duration").textContent = String(val[0] * div); kid(c, "type").textContent = val[1]; if (val[2]) kid(c, "type").after(doc.createElement("dot"));
+    const ties = [...(first ? (tieIn ? ["stop"] : []) : ["stop"]), ...(last ? (tieOut ? ["start"] : []) : ["start"])];
+    ties.slice().reverse().forEach(t => { const e = doc.createElement("tie"); e.setAttribute("type", t); kid(c, "duration").after(e); });
+    if (ties.length) { let no = kid(c, "notations"); if (!no) { no = doc.createElement("notations"); c.insertBefore(no, kid(c, "lyric") || null); } ties.forEach(t => { const e = doc.createElement("tied"); e.setAttribute("type", t); no.insertBefore(e, no.firstChild); }); }
+    return c;
+  };
+  const v1 = noteValues((len(n) - over) / div), v2 = noteValues(over / div), all = [...v1.map(v => [v, "a"]), ...v2.map(v => [v, "b"])];
+  const made = all.map(([v, w], i) => ({ w, el: piece(0, v, i === 0, i === all.length - 1) }));
+  made.filter(x => x.w === "a").forEach(x => n.before(x.el));
+  const firstNote = kids(nx, "note")[0], bs = made.filter(x => x.w === "b").map(x => x.el);
+  bs.forEach(el => nx.insertBefore(el, firstNote));
+  n.remove(); kids(nx, "note").forEach(e => { const r = kid(e, "rest"); if (r) r.removeAttribute("measure"); });
+  fitBar(doc, part, nx, bs[bs.length - 1]);
+  return true;
+}
+/* undo and redo: whole scores (notes, bars, parts); a part added or removed is read again */
 function pushUndo() {
-  S.undo = S.undo || []; S.undo.push(S.piece.xml); if (S.undo.length > 60) S.undo.shift();
-  if (!S.piece.origXml) S.piece.origXml = S.undo[0];
+  S.undo = S.undo || []; S.undo.push(S.piece.xml); if (S.undo.length > 60) S.undo.shift(); S.redo = [];
+  /* "Przywróć odczyt" is for a reading from a photo only (never the player's own work or a file) */
+  if (!S.piece.origXml && fromPhoto()) S.piece.origXml = S.undo[0];
 }
+const fromPhoto = () => !!S.piece && (S.piece.sourceType === "device" || S.piece.sourceType === "ai");
+const canRestore = () => fromPhoto() && !!S.piece.origXml && S.piece.origXml !== S.piece.xml;
+function syncRedo() { const b = $("#ed-redo"); if (b) b.disabled = !(S.redo && S.redo.length); }
+function restoreXml(xml) {
+  const ids = x => analyseXml(x).parts.map(p => p.id).join();
+  if (ids(xml) === ids(S.piece.xml)) { S.piece.xml = xml; refreshInfo(); }
+  else { applyNewXml(xml, null); if (S.editMode) Object.assign(S, { iv: { d: 0, s: 0 }, clef: "keep", preset: -1, readOct: 0, page: "screen" }); }
+  afterEdit();
+}
+function undo() { if (!S.undo || !S.undo.length) return false; (S.redo = S.redo || []).push(S.piece.xml); restoreXml(S.undo.pop()); return true; }
+function redo() { if (!S.redo || !S.redo.length) return false; S.undo.push(S.piece.xml); restoreXml(S.redo.pop()); return true; }
 function editNote(op) {
   if (op === "done") { setEditMode(false); return; }
   if (op.startsWith("len:") && !S.editSel) return;
   if (op === "bar") { openSheet("bar"); return; }
-  if (op === "undo") { if (!S.undo || !S.undo.length) return; S.piece.xml = S.undo.pop(); refreshInfo(); afterEdit(); return; }
+  if (op === "undo") { undo(); return; }
+  if (op === "redo") { redo(); return; }
   const sel = S.editSel; if (!sel) return;
   const doc = parseXml(S.piece.xml), at = xmlNoteAt(doc, sel); if (!at || !at.n) return;
   const n = at.n, p = kid(n, "pitch"), fifths = keyAt(at.part, at.m);
   const dropAcc = () => kids(n, "accidental").forEach(a => a.remove());
   const setAlter = v => { if (!p) return; let al = kid(p, "alter"); if (v) { if (!al) { al = doc.createElement("alter"); p.insertBefore(al, kid(p, "octave")); } al.textContent = String(v); } else if (al) al.remove(); dropAcc(); };
-  const move = d => { if (!p) return; const idx = parseInt(txt(p, "octave"), 10) * 7 + STEP_I[txt(p, "step")] + d, st = STEP_N[((idx % 7) + 7) % 7]; kid(p, "step").textContent = st; kid(p, "octave").textContent = String(Math.floor(idx / 7)); setAlter(keyAlter(fifths, st)); };
+  /* a tie joins two equal notes: when one of them changes pitch (or becomes a rest) the tie goes from both */
+  const pitched = () => [...at.part.getElementsByTagName("note")].filter(x => kid(x, "pitch") && !kid(x, "grace"));
+  const untie = x => {
+    const has = t => [...x.getElementsByTagName("tie")].some(e => e.getAttribute("type") === t), all = pitched(), k = all.indexOf(x);
+    const drop = (el, t) => { if (!el) return; [...el.getElementsByTagName("tie"), ...el.getElementsByTagName("tied")].filter(e => e.getAttribute("type") === t).forEach(e => e.remove()); const no = kid(el, "notations"); if (no && !no.children.length) no.remove(); };
+    if (has("start")) { drop(all.slice(k + 1).find(y => txt(kid(y, "pitch"), "step") === txt(kid(x, "pitch"), "step") && txt(kid(y, "pitch"), "octave") === txt(kid(x, "pitch"), "octave") && !kid(y, "chord") === !kid(x, "chord")), "stop"); drop(x, "start"); }
+    if (has("stop")) { drop(all.slice(0, k).reverse().find(y => txt(kid(y, "pitch"), "step") === txt(kid(x, "pitch"), "step") && txt(kid(y, "pitch"), "octave") === txt(kid(x, "pitch"), "octave")), "start"); drop(x, "stop"); }
+  };
+  /* a slur on a note that leaves (a rest, a deleted chord note) goes with its other end */
+  const unslur = x => {
+    const no = kid(x, "notations"); if (!no) return; const all = pitched(), k = all.indexOf(x);
+    kids(no, "slur").forEach(s => { const num = s.getAttribute("number") || "1", t = s.getAttribute("type"), other = t === "start" ? all.slice(k + 1) : all.slice(0, k).reverse();
+      for (const y of other) { const z = [...y.getElementsByTagName("slur")].find(e => (e.getAttribute("number") || "1") === num && e.getAttribute("type") === (t === "start" ? "stop" : "start")); if (z) { const yn = z.parentNode; z.remove(); if (!yn.children.length) yn.remove(); break; } }
+      s.remove(); });
+  };
+  const toRest = x => {        // a note becomes a rest of the same length: its chord notes, tie, slur, accidental, lyric go
+    let nx = x.nextElementSibling; while (nx && kid(nx, "chord")) { const nn = nx.nextElementSibling; nx.remove(); nx = nn; }
+    untie(x); unslur(x);
+    const q = kid(x, "pitch"); x.replaceChild(doc.createElement("rest"), q);
+    ["accidental", "stem", "beam", "notehead", "lyric", "tie"].forEach(t => kids(x, t).forEach(e => e.remove()));
+    const no = kid(x, "notations"); if (no) { ["tied", "articulations", "ornaments", "technical"].forEach(t => kids(no, t).forEach(e => e.remove())); if (!no.children.length) no.remove(); }
+  };
+  const move = d => { if (!p) return; untie(n); const idx = parseInt(txt(p, "octave"), 10) * 7 + STEP_I[txt(p, "step")] + d, st = STEP_N[((idx % 7) + 7) % 7]; kid(p, "step").textContent = st; kid(p, "octave").textContent = String(Math.floor(idx / 7)); setAlter(keyAlter(fifths, st)); };
   const toNote = () => {
     const r = kid(n, "rest"), prev = [...at.part.getElementsByTagName("pitch")].filter(x => x.compareDocumentPosition(n) & 4).pop();
     const np = doc.createElement("pitch"), clef = clefAt(at.part, at.m), mid = (CLEF_BOTTOM[clef] ?? 18) + 4;
@@ -884,24 +1118,39 @@ function editNote(op) {
       ty.textContent = "quarter"; fitBar(doc, at.part, at.m, n);
     }
   };
-  if (op.startsWith("len:") || op === "dot") {
+  /* a length set on a note: the bar is fitted; a note too long for what is left of the bar is tied into the next */
+  const setLen = (t, dotted) => {
     const div = divisionsAt(at.part, at.m), r = kid(n, "rest"); if (r) r.removeAttribute("measure");
-    const t = op === "dot" ? (txt(n, "type") || "quarter") : op.slice(4), dotted = op === "dot" ? !kid(n, "dot") : false;
-    kids(n, "dot").forEach(d => d.remove());
+    kids(n, "dot").forEach(d => d.remove()); plainLen(n);
     kid(n, "duration").textContent = String(ED_LEN[t] * div * (dotted ? 1.5 : 1));
     let ty = kid(n, "type"); if (!ty) { ty = doc.createElement("type"); kid(n, "voice") ? kid(n, "voice").after(ty) : kid(n, "duration").after(ty); }
     ty.textContent = t; if (dotted) ty.after(doc.createElement("dot"));
-    fitBar(doc, at.part, at.m, n);
+    for (let c = n.nextElementSibling; c && kid(c, "chord"); c = c.nextElementSibling) { kid(c, "duration").textContent = kid(n, "duration").textContent; kids(c, "dot").forEach(d => d.remove()); plainLen(c); const ct = kid(c, "type"); if (ct) { ct.textContent = t; if (dotted) ct.after(doc.createElement("dot")); } }
+    if (fitBar(doc, at.part, at.m, n)) return true;
+    if (!kid(n, "rest") && tieOver(doc, at.part, at.m, n)) { hud("Nuta przechodzi do następnego taktu (z łukiem)", 2200); S.editSel = null; return true; }
+    hud("To się nie mieści w takcie", 2500); return false;
+  };
+  if (op.startsWith("len:") || op === "dot") {
+    if (kid(n, "chord")) return;               // a chord note has the length of the chord's first note
+    const t = op === "dot" ? (txt(n, "type") || "quarter") : op.slice(4), dotted = op === "dot" ? !kid(n, "dot") : false;
+    if (!setLen(t, dotted)) return;
   } else if (op === "left" || op === "right") {
-    /* the note changes places with its neighbour; at the bar line it goes into the next or previous bar */
+    /* the note (with its chord) changes places with its neighbour; at the bar line it goes into the next or previous
+       bar, only for a neighbour of the same length (both bars still add up) */
     const sib = x => { let y = op === "left" ? x.previousElementSibling : x.nextElementSibling; while (y && (y.tagName !== "note" || kid(y, "chord"))) y = op === "left" ? y.previousElementSibling : y.nextElementSibling; return y; };
+    const group = x => { const g = [x]; for (let c = x.nextElementSibling; c && kid(c, "chord"); c = c.nextElementSibling) g.push(c); return g; };
+    if (kid(n, "chord")) return;
     let other = sib(n), bar = sel.bar;
+    if (other && (txt(other, "voice") || "1") !== (txt(n, "voice") || "1")) other = null;
     if (!other) {
       const ms = kids(at.part, "measure"), mi = ms.indexOf(at.m) + (op === "left" ? -1 : 1), nm = ms[mi]; if (!nm) return;
       const ns = kids(nm, "note").filter(x => !kid(x, "chord")); other = op === "left" ? ns[ns.length - 1] : ns[0]; if (!other) return; bar = mi + 1;
+      if (Math.abs((parseFloat(txt(other, "duration")) || 0) - (parseFloat(txt(n, "duration")) || 0)) > 1e-6 || kids(at.m, "backup").length || kids(nm, "backup").length) { hud("Przez kreskę taktową przejdzie tylko nuta tej samej długości", 3000); return; }
+      kids(other, "rest").forEach(r => r.removeAttribute("measure"));
     }
-    const ph = doc.createElement("x"); n.replaceWith(ph); other.replaceWith(n); ph.replaceWith(other);
-    const i = kids(n.parentNode, "note").indexOf(n), di = bar === sel.bar ? sel.di : drawnBars(processedXml()).indexOf(bar) + (op === "left" ? 0 : 0);
+    const ga = group(n), gb = group(other), pa = doc.createElement("x"), pb2 = doc.createElement("x");
+    ga[0].before(pa); gb[0].before(pb2); ga.forEach(x => pb2.before(x)); gb.forEach(x => pa.before(x)); pa.remove(); pb2.remove();
+    const i = kids(n.parentNode, "note").indexOf(n);
     S.editSel = { ...sel, bar, i, di: bar === sel.bar ? sel.di : Math.max(0, sel.di + (op === "left" ? -1 : 1)) };
   } else if (op.startsWith("dyn:") || op.startsWith("wedge:") || op.startsWith("art:") || op === "fermata" || op === "slur") {
     /* markings on the selected note, as in printed parts: dynamics and hairpins below the staff, articulations
@@ -914,7 +1163,12 @@ function editNote(op) {
       if (!same) { const d = doc.createElement("direction"); d.setAttribute("placement", "below"); d.innerHTML = `<direction-type><dynamics><${v}/></dynamics></direction-type>`; n.before(d); }
     } else if (op.startsWith("wedge:")) {
       const kind = op.slice(6), old = dirBefore("wedge");
-      if (old) { old.remove(); [...at.m.getElementsByTagName("wedge")].filter(w => w.getAttribute("type") === "stop").forEach(w => w.closest("direction").remove()); }
+      if (old) {
+        /* the hairpin's own end goes with it (the next stop of the same number), not every end in the bar */
+        const num = old.getElementsByTagName("wedge")[0].getAttribute("number") || "1", dirs = [...at.part.getElementsByTagName("direction")], k = dirs.indexOf(old);
+        const stop = dirs.slice(k + 1).find(d => [...d.getElementsByTagName("wedge")].some(w => w.getAttribute("type") === "stop" && (w.getAttribute("number") || "1") === num));
+        old.remove(); if (stop) stop.remove();
+      }
       else {
         const d = doc.createElement("direction"); d.setAttribute("placement", "below"); d.innerHTML = `<direction-type><wedge type="${kind}"/></direction-type>`; n.before(d);
         const e = doc.createElement("direction"); e.setAttribute("placement", "below"); e.innerHTML = `<direction-type><wedge type="stop"/></direction-type>`;
@@ -942,28 +1196,35 @@ function editNote(op) {
     const ni = Math.max(0, Math.min(ED_TYPES.length - 1, ED_TYPES.indexOf(cur) + (op === "longer" ? 1 : -1))), nt = ED_TYPES[ni];
     kids(n, "dot").forEach(d => d.remove());
     if (r) r.removeAttribute("measure");
-    kid(n, "duration").textContent = String(ED_LEN[nt] * div);
-    let ty = kid(n, "type"); if (!ty) { ty = doc.createElement("type"); kid(n, "voice") ? kid(n, "voice").after(ty) : kid(n, "duration").after(ty); }
-    ty.textContent = nt;
-    fitBar(doc, at.part, at.m, n);
+    if (kid(n, "chord")) return;
+    if (!setLen(nt, false)) return;
   } else if (op === "rest") {
-    if (p) { n.replaceChild(doc.createElement("rest"), p); dropAcc(); kids(n, "stem").forEach(s => s.remove()); kids(n, "beam").forEach(s => s.remove()); }
+    if (p) { if (kid(n, "chord")) { untie(n); unslur(n); n.remove(); S.editSel = null; } else toRest(n); }
     else toNote();
   } else if (op === "add") {
     /* a rest becomes a note; a note gets a copy right after it (taking the place of the rests that follow) */
     if (kid(n, "rest")) toNote();
     else {
-      const c = n.cloneNode(true); kids(c, "chord").forEach(x => x.remove()); n.after(c);
-      fitBar(doc, at.part, at.m, c); S.editSel = { ...sel, i: sel.i + 1 };
+      if (kid(n, "chord")) return;
+      let last = n; while (last.nextElementSibling && kid(last.nextElementSibling, "chord")) last = last.nextElementSibling;
+      const c = n.cloneNode(true); kids(c, "chord").forEach(x => x.remove());
+      /* the copy is a plain note: no tie, slur or lyric carried over */
+      ["tie", "lyric"].forEach(t => kids(c, t).forEach(x => x.remove())); const cn = kid(c, "notations"); if (cn) { ["tied", "slur"].forEach(t => kids(cn, t).forEach(x => x.remove())); if (!cn.children.length) cn.remove(); }
+      last.after(c);
+      if (!fitBar(doc, at.part, at.m, c)) { hud("To się nie mieści w takcie", 2500); return; }
+      S.editSel = { ...sel, i: kids(at.m, "note").indexOf(c) };
     }
   } else if (op === "delete") {
-    /* a note leaves a rest of the same length (the bar still adds up); a rest goes away */
-    if (p) { n.replaceChild(doc.createElement("rest"), p); dropAcc(); kids(n, "stem").forEach(s => s.remove()); kids(n, "beam").forEach(s => s.remove()); }
+    /* a note leaves a rest of the same length (the bar still adds up); a chord note just goes (the head's next note
+       takes its place); a rest goes away */
+    if (p && kid(n, "chord")) { untie(n); unslur(n); n.remove(); S.editSel = null; }
+    else if (p && n.nextElementSibling && kid(n.nextElementSibling, "chord")) { untie(n); unslur(n); const nx = n.nextElementSibling; kids(nx, "chord").forEach(x => x.remove()); n.remove(); }
+    else if (p) toRest(n);
     else if (kids(at.m, "note").length > 1) { n.remove(); S.editSel = null; }
   }
   pushUndo();
   S.piece.xml = new XMLSerializer().serializeToString(doc);
-  if (["up", "down", "octup", "octdown", "flat", "sharp", "natural", "rest", "add"].includes(op)) previewNote(op === "add" ? n.nextElementSibling : n);
+  if (["up", "down", "octup", "octdown", "flat", "sharp", "natural", "rest", "add"].includes(op)) previewNote(op === "add" ? kids(at.m, "note")[S.editSel ? S.editSel.i : 0] : n);
   afterEdit();
 }
 function keyAt(part, m) { let f = 0; for (const mm of kids(part, "measure")) { kids(mm, "attributes").forEach(a => { const k = kid(a, "key"); if (k) f = parseInt(txt(k, "fifths"), 10) || 0; }); if (mm === m) break; } return f; }
@@ -971,16 +1232,15 @@ function clefAt(part, m) { let c = "G"; for (const mm of kids(part, "measure")) 
 function timeAt(part, m) { const { div, cap } = barCap(part, m); let t = null; for (const mm of kids(part, "measure")) { kids(mm, "attributes").forEach(a => { const x = kid(a, "time"); if (x) t = `${txt(x, "beats")}/${txt(x, "beat-type")}`; }); if (mm === m) break; } return t || (cap / div === 4 ? "4/4" : ""); }
 /* key, clef and parts are read again after a change to the music itself */
 function refreshInfo() {
-  const info = analyseXml(S.piece.xml); S.srcKey = info.key;
-  S.parts.forEach(p => { const q = info.parts.find(x => x.id === p.id); if (q) Object.assign(p, { clef: q.clef, staves: q.staves }); });
-  const first = S.parts.find(p => p.keep) || S.parts[0]; if (first) S.srcClef = first.clef;
+  const info = analyseXml(S.piece.xml, melodyId()); S.srcKey = info.key;
+  S.parts.forEach(p => { const q = info.parts.find(x => x.id === p.id); if (q) Object.assign(p, { clef: q.clef, staves: q.staves, name: q.name }); });
+  const first = S.parts.find(p => p.id === readingPartId()) || S.parts[0]; if (first) S.srcClef = first.clef;
 }
 /* ---------------- the bar sheet: metre, clef, key signature, adding and removing bars, tempo ---------------- */
 function barTarget() {
   if (S.editSel) return { bar: S.editSel.bar, pid: S.editSel.pid };
   const b = S.fromBar >= 0 ? drawnBars(processedXml())[S.fromBar] : null;
-  const first = S.parts.find(p => p.keep && !(p.staves > 1)) || S.parts.find(p => p.keep);
-  return { bar: b || 1, pid: first && first.id };
+  return { bar: b || 1, pid: readingPartId() };
 }
 function attrsOf(doc, m) {
   let a = kid(m, "attributes");
@@ -1021,10 +1281,13 @@ function barOp(op, val) {
       });
     });
   } else if (op === "clef" || op === "key") {
+    /* the key is chosen as the part being read is written; a transposing part gets it moved by its own transposition
+       (concert F major: a B♭ trumpet part in G major) */
+    const trF = id => intervalFifths(trIv(partTr(id)));
     parts.filter(p => op === "key" || p.getAttribute("id") === pid).forEach(part => {
       const ms = kids(part, "measure"); if (!ms[bar - 1]) return;
       const oldClef = clefAt(part, ms[bar - 1]), shift = op === "clef" ? CLEF_BOTTOM[val] - CLEF_BOTTOM[oldClef] : 0;
-      let oldKey = keyAt(part, ms[bar - 1]); const newKey = op === "key" ? +val : null;
+      let oldKey = keyAt(part, ms[bar - 1]); const newKey = op === "key" ? +val - trF(pid) + trF(part.getAttribute("id")) : null;
       later(part, bar - 1).forEach((mm, j) => {
         kids(mm, "attributes").forEach(a => {
           const k = kid(a, "key"); if (k) oldKey = parseInt(txt(k, "fifths"), 10) || 0;
@@ -1045,14 +1308,13 @@ function barOp(op, val) {
       if (op === "clef") {
         const c = doc.createElement("clef"); c.innerHTML = val.startsWith("C") ? `<sign>C</sign><line>${val.slice(1)}</line>` : `<sign>${val}</sign><line>${val === "F" ? 4 : 2}</line>`;
         putAttr(a, c);
-      } else { const k = doc.createElement("key"); k.innerHTML = `<fifths>${val}</fifths>`; putAttr(a, k); }
+      } else { const k = doc.createElement("key"); k.innerHTML = `<fifths>${newKey}</fifths>`; putAttr(a, k); }
     });
   } else if (op === "add" || op === "addbefore") {
     parts.forEach(part => {
       const m = kids(part, "measure")[bar - 1]; if (!m) return;
-      const nm = doc.createElement("measure"), r = restNote(doc, barCap(part, m).cap, "", 1);
-      kid(r, "rest").setAttribute("measure", "yes"); nm.appendChild(r);
-      if (op === "add") m.after(nm);
+      const nm = emptyBar(doc, part, m);
+      if (op === "add") { m.after(nm); const fin = m === kids(part, "measure").slice(-2)[0] && kids(m, "barline").find(b => (b.getAttribute("location") || "right") === "right" && /light-heavy/.test(txt(b, "bar-style")) && !kid(b, "repeat")); if (fin) nm.appendChild(fin); }
       else {          // the new first bar takes over the key, metre and clef
         const a = kid(m, "attributes"); if (a) nm.insertBefore(a, nm.firstChild);
         const pr = kid(m, "print"); if (pr) nm.insertBefore(pr, nm.firstChild);
@@ -1075,7 +1337,9 @@ function barOp(op, val) {
   S.piece.xml = new XMLSerializer().serializeToString(doc);
   if (op !== "time" && op !== "clef" && op !== "key") S.editSel = null;
   refreshInfo(); afterEdit();
-  hud({ time: `Metrum ${val}`, clef: "Zmieniono klucz", key: "Zmieniono znaki przy kluczu", add: "Dodano takt", addbefore: "Dodano takt", del: "Usunięto takt" }[op], 1600);
+  /* a new metre re-sizes only empty bars; written bars that no longer add up are said, not silently left red */
+  const red = op === "time" ? doubtfulBars(barIssues(S.piece.xml)).filter(b => b >= bar).length : 0;
+  hud(red ? `Metrum ${val}. ${red} ${plural(red, "takt trzeba", "takty trzeba", "taktów trzeba")} poprawić (na czerwono)` : { time: `Metrum ${val}`, clef: "Zmieniono klucz", key: "Zmieniono znaki przy kluczu", add: "Dodano takt", addbefore: "Dodano takt", del: "Usunięto takt" }[op], red ? 4000 : 1600);
   if (op === "del" || op === "add" || op === "addbefore") closeSheet(); else buildBarSheet();
 }
 $$("#bar-time button").forEach(b => b.addEventListener("click", () => barOp("time", b.dataset.v)));
@@ -1091,16 +1355,28 @@ function afterEdit() {
   const other = (S.piece.issues || []).filter(t => !/wartości rytmicznych/.test(t));
   S.piece.issues = [...barIssues(S.piece.xml), ...other].sort((a, b) => parseInt(a.slice(5), 10) - parseInt(b.slice(5), 10));
   S.keepSel = S.editSel; changed();
-  $("#ed-undo").disabled = !(S.undo && S.undo.length);
-  $("#btn-restore").hidden = !S.piece.origXml;
+  $("#ed-undo").disabled = !(S.undo && S.undo.length); syncRedo();
+  $("#btn-restore").hidden = !canRestore();
   const nums = doubtfulBars(S.piece.issues);
-  if (!$("#notice").hidden || nums.length) { $("#notice").hidden = !nums.length; if (nums.length) { $("#notice-title").textContent = `${nums.length} ${plural(nums.length, "takt", "takty", "taktów")} do sprawdzenia`; $("#notice-text").textContent = `Zaznaczone na czerwono: ${nums.slice(0, 8).join(", ")}${nums.length > 8 ? " i inne" : ""}. Porównaj je ze zdjęciem.`; } }
+  if (!$("#notice").hidden || nums.length) { $("#notice").hidden = !nums.length; if (nums.length) { $("#notice-title").textContent = `${nums.length} ${plural(nums.length, "takt", "takty", "taktów")} do sprawdzenia`; $("#notice-text").textContent = `Zaznaczone na fioletowo: ${nums.slice(0, 8).join(", ")}${nums.length > 8 ? " i inne" : ""}. Porównaj je ze zdjęciem.`; } }
 }
 $$("#editbar [data-ed]").forEach(b => b.addEventListener("click", () => editNote(b.dataset.ed)));
+/* asked first, and undoable: the corrections are one tap away from being gone */
 $("#btn-restore").addEventListener("click", () => {
-  if (!S.piece.origXml) return;
-  S.undo = []; S.piece.xml = S.piece.origXml; delete S.piece.origXml; S.editSel = null; selectNote(null);
-  S.piece.issues = barIssues(S.piece.xml); afterEdit(); closeSheet(); hud("Przywrócono odczyt");
+  if (!canRestore()) return;
+  closeSheetThen(() => askConfirm("Przywrócić odczyt ze zdjęcia?", "Twoje poprawki i dodane partie znikną. Możesz to cofnąć.", "Przywróć", () => {
+    if (!canRestore()) return;
+    const orig = S.piece.origXml, other = (S.piece.issues || []).filter(t => !/wartości rytmicznych/.test(t));
+    pushUndo(); S.editSel = null; selectNote(null);
+    S.piece.issues = [...barIssues(orig), ...other];
+    applyNewXml(orig, null); hudUndo("Przywrócono odczyt");
+  }));
+});
+/* ⌘Z / Ctrl+Z and ⇧⌘Z / Ctrl+Y while correcting */
+document.addEventListener("keydown", e => {
+  if (!S.editMode || openSheetId || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || !(e.metaKey || e.ctrlKey)) return;
+  const k = e.key.toLowerCase();
+  if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); } else if ((k === "z" && e.shiftKey) || k === "y") { e.preventDefault(); redo(); }
 });
 
 /* tap a note: correct it; tap a bar elsewhere: it is selected and ▶ plays from there; tap again (or outside the bars) to clear */
@@ -1111,7 +1387,7 @@ $("#pages").addEventListener("click", e => {
   const m = e.target.closest("g.measure") || measureAt(e.clientX, e.clientY);
   if (!m) { if (S.fromMs) clearFromBar(); else if (e.target.closest(".page") && !playState) document.body.classList.toggle("immersive"); return; }
   const di = measureEls().indexOf(m);
-  if (pb.pick || pb.loop) { setLoopBar(di); return; }
+  if (pb.loop) { setLoopBar(di); return; }
   if (m.classList.contains("sel") && !playState) { clearFromBar(); return; }
   const firstNote = m.querySelector("g.note, g.rest, g.mRest"); if (!firstNote) return;
   let ms = 0; try { ms = tk.getTimeForElement(firstNote.id) || 0; } catch {}
@@ -1142,10 +1418,10 @@ async function showPeek(bar) {
 $("#peek-x").addEventListener("click", () => { $("#peek").hidden = true; });
 
 /* Thumbnail: top of page one, as the library cover */
-async function makeThumb() {
+async function makeThumb(src = thumbSrc()) {          // src from thumbSrc(): taken before any wait
   await engineReady;
-  tk.setOptions(a4Options({}, 1));
-  tk.loadData(processedXml());
+  tk.setOptions(src.opts);
+  tk.loadData(src.xml);
   const doc = new DOMParser().parseFromString(tk.renderToSVG(1), "image/svg+xml");
   const svg = doc.documentElement;
   enlargeTitle(svg, 1.9);
@@ -1174,43 +1450,82 @@ function scoreBpm() {
 }
 /* Playback is drawn into a WAV file first (OfflineAudioContext) and played by an ordinary
    <audio> element. Media elements are what browsers treat most kindly: they play with the
-   iPhone/iPad silent switch on, through Bluetooth speakers, and after the screen locks.
-   The element is "unlocked" inside the tap itself, so the later play() is allowed everywhere. */
+   iPhone/iPad silent switch on, through Bluetooth speakers, and on with the screen locked (play and pause
+   then sit on the lock screen). The element is "unlocked" inside the tap itself, so the later play() is
+   allowed everywhere. The file is drawn at 24 kHz (half the memory of 44.1 kHz, plenty for these sounds)
+   and written out in slices, so the page never freezes while the sound is being prepared. */
 const player = new Audio(); player.preload = "auto"; player.setAttribute("playsinline", "");
 const SILENCE = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+/* the microphone is in use (tuner or a recording): iOS must then stay in "play-and-record" */
+const micBusy = () => (typeof tuner !== "undefined" && tuner.on) || (typeof of !== "undefined" && !!of.stream);
+function setSession(type) { try { if (navigator.audioSession && navigator.audioSession.type !== type) navigator.audioSession.type = type; } catch {} }
+/* nothing sounds and nothing listens: give the phone's audio back to other apps (iOS 17+) */
+function sessionIdle() { if (!playState && !pb.preparing && !micBusy() && !(typeof metro !== "undefined" && metro.on)) setSession("auto"); }
 function unlockAudio() {
-  try { if (navigator.audioSession && !tuner.on && !(typeof of !== "undefined" && of.stream)) navigator.audioSession.type = "playback"; } catch {}
+  if (!micBusy()) setSession("playback");
   if (!player.src || player.src === SILENCE || player.paused) {
     try { player.src = SILENCE; const pr = player.play(); if (pr) pr.catch(() => {}); } catch {}
   }
 }
+/* one audio context for the short sounds (note preview, metronome, listening to a recording): iOS allows only a
+   few, and a running one keeps the phone's audio busy, so it is suspended after 20 s of quiet */
+const fx = { ctx: null, idle: 0 };
+function fxCtx() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!fx.ctx || fx.ctx.state === "closed") fx.ctx = new AC();
+  if (!micBusy()) setSession("playback");                          // silent switch on: still heard (iOS 17+)
+  if (fx.ctx.state !== "running") { const r = fx.ctx.resume?.(); if (r) r.catch(() => {}); }
+  fxIdle(); return fx.ctx;
+}
+function fxIdle(ms = 20000) {
+  clearTimeout(fx.idle);
+  fx.idle = setTimeout(() => { if (metro.on || !fx.ctx || fx.ctx.state !== "running") return; const r = fx.ctx.suspend?.(); if (r) r.catch(() => {}); sessionIdle(); }, ms);
+}
+const yieldNow = () => (globalThis.scheduler && typeof scheduler.yield === "function") ? scheduler.yield() : new Promise(r => setTimeout(r, 0));
 /* ---------------- 3.8 player (benchmark: Soundslice, MuseScore 4, Songsterr, Tomplay, Flat, SmartMusic) ----------------
    The cursor follows the sound itself (the audio clock, so it never drifts): a soft highlight on the bar and a thin
    line gliding through it. The page moves one line of music at a time, keeping the playing line in the upper third.
-   Pause keeps the place; a one-bar count-in and the metronome click are rendered into the same sound; a loop of
-   bars repeats with the count-in each time and can be changed at any moment, also while playing. */
+   Pause keeps the place; a count-in and the metronome click are rendered into the same sound; a loop of
+   bars repeats with the count-in each time and can be changed at any moment, also while playing.
+   Repeats and 1st/2nd endings are played as written: Verovio's timemap unrolls them ("…-rend2" is the second
+   time through a bar), and every id is mapped back to the drawn note for the cursor. */
 let playState = null, playToken = 0;
-const pb = { click: store.get("click", "count"), loop: null, pick: false, mute: new Set(), follow: true, resumeMs: 0 };
+/* lag: headphone delay in seconds (Bluetooth ≈ 0.2), store "avLag" in ms; the cursor waits for the sound */
+const pb = { click: store.get("click", "count"), loop: null, mute: new Set(), follow: true, resumeMs: 0, preparing: 0, trainer: null, lag: (+store.get("avLag", 0) || 0) / 1000 };
+function setAvLag(ms) { pb.lag = Math.max(0, Math.min(500, +ms || 0)) / 1000; store.set("avLag", String(Math.round(pb.lag * 1000))); }
+/* the tempo actually played: the piece's tempo, times the speed trainer's step */
+const playBpm = () => Math.round(curBpm() * (pb.trainer ? pb.trainer.pct / 100 : 1));
 function setPlayUi(on) {
   const b = $("#btn-play"); b.classList.toggle("on", on);
   b.innerHTML = icon(on ? "pause" : "play");
   b.setAttribute("aria-label", on ? "Pauza" : "Posłuchaj"); b.title = on ? "Pauza" : "Posłuchaj";
   document.body.classList.toggle("playing", on);
-  $("#tp-bpm").textContent = String(curBpm());
+  $("#tp-bpm").textContent = String(playBpm());
+}
+/* "Przygotowuję dźwięk…" only when preparing takes long enough to be noticed */
+const PREP = "Przygotowuję dźwięk…";
+function prepHud(on) {
+  clearTimeout(prepHud.t);
+  if (on) prepHud.t = setTimeout(() => hud(PREP, 30000), 350);
+  else { const h = $("#toast"); if (h && h.textContent === PREP) h.classList.remove("show"); }
 }
 function stopPlayback(keepPlace) {
   playToken++;
-  if (!playState) return;
+  prepHud(false);
+  if (pb.preparing) { pb.preparing = 0; if (!playState) setPlayUi(false); }
+  if (!playState) { sessionIdle(); return; }
   if (keepPlace) pb.resumeMs = playPos();
+  playState.stopping = true;
   try { (playState.src || player).pause(); } catch {}
   try { player.loop = false; } catch {}
   cancelAnimationFrame(playState.raf);
-  const url = playState.url; if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const url = playState.url; if (url && url !== wavCache.url) setTimeout(() => URL.revokeObjectURL(url), 1000);
   $$("#pages g.playing").forEach(g => g.classList.remove("playing"));
   $$("#pages .playline, #pages .barlight").forEach(x => x.remove());
   $("#follow-pill").hidden = true; $("#tp-bar").textContent = ""; $("#tp-fill").style.width = "0";
-  playState = null; setPlayUi(false);
+  playState = null; setPlayUi(false); mediaState("paused");
   if (!tuner.on && !metro.on) { try { wakeLock?.release(); } catch {} wakeLock = null; }
+  sessionIdle();
 }
 /* one note of the brass-like synth, into any audio context */
 function synthNote(ctx, out, f, st, en) {
@@ -1228,120 +1543,210 @@ function clickNote(ctx, out, t, accent) {
   o.frequency.value = accent ? 1760 : 1175; g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(accent ? 2.2 : 1.4, t + .002); g.gain.exponentialRampToValueAtTime(.001, t + .05);
   o.connect(g); g.connect(out); o.start(t); o.stop(t + .07);
 }
-function wavBlob(buf) {
-  const ch = buf.getChannelData(0), n = ch.length, sr = buf.sampleRate;
-  let peak = 0; for (let i = 0; i < n; i++) { const v = Math.abs(ch[i]); if (v > peak) peak = v; }
-  const gain = peak > 0 ? 0.89 / peak : 1;
-  const out = new DataView(new ArrayBuffer(44 + n * 2));
-  const str = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
-  str(0, "RIFF"); out.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
-  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, 1, true); out.setUint32(24, sr, true);
-  out.setUint32(28, sr * 2, true); out.setUint16(32, 2, true); out.setUint16(34, 16, true); str(36, "data"); out.setUint32(40, n * 2, true);
-  for (let i = 0, o = 44; i < n; i++, o += 2) out.setInt16(o, Math.max(-32767, Math.min(32767, Math.round(ch[i] * gain * 32767))), true);
-  return { blob: new Blob([out.buffer], { type: "audio/wav" }), peak };
+/* 16-bit WAV, written in slices with a breath between them (no long task). Int16Array is little-endian on every
+   phone and computer Solo runs on, as WAV wants. */
+async function wavBlob(buf) {
+  const ch = buf.getChannelData(0), n = ch.length, sr = buf.sampleRate, SL = 1 << 19;
+  let peak = 0;
+  for (let s = 0; s < n; s += SL) { const e = Math.min(n, s + SL); for (let i = s; i < e; i++) { const v = ch[i] < 0 ? -ch[i] : ch[i]; if (v > peak) peak = v; } if (e < n) await yieldNow(); }
+  const gain = (peak > 0 ? 0.89 / peak : 1) * 32767, ab = new ArrayBuffer(44 + n * 2), h = new DataView(ab, 0, 44), pcm = new Int16Array(ab, 44, n);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) h.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); h.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt ");
+  h.setUint32(16, 16, true); h.setUint16(20, 1, true); h.setUint16(22, 1, true); h.setUint32(24, sr, true);
+  h.setUint32(28, sr * 2, true); h.setUint16(32, 2, true); h.setUint16(34, 16, true); str(36, "data"); h.setUint32(40, n * 2, true);
+  for (let s = 0; s < n; s += SL) {
+    const e = Math.min(n, s + SL);
+    for (let i = s; i < e; i++) { const v = Math.round(ch[i] * gain); pcm[i] = v > 32767 ? 32767 : v < -32767 ? -32767 : v; }
+    if (e < n) await yieldNow();
+  }
+  return { blob: new Blob([ab], { type: "audio/wav" }), peak };
 }
 const LEAD = 0.06;            // seconds of silence at the start of each rendered file
+const PLAY_SR = 24000;
 const measureEls = () => [...$$("#pages g.measure")];
-/* the beats a metronome gives in each drawn bar (6/8 → 2, 9/8 → 3, 12/8 → 4, 3/8 → 1) */
-function beatsPerBar() {
+const baseId = id => String(id).replace(/-rend\d+$/, "");
+/* the metre of each drawn bar: metronome beats (6/8 → 2, 9/8 → 3, 12/8 → 4, 3/8 → 1), quarters in a full bar,
+   compound or not. Read once per score and set of shown parts. */
+function barMeters() {
+  const key = (S.piece && S.piece.xml) + "|" + S.parts.map(p => (p.keep ? 1 : 0)).join("");
+  if (barMeters.key === key) return barMeters.val;
   const xml = processedXml(), doc = parseXml(xml), part = doc.getElementsByTagName("part")[0]; if (!part) return [];
   let b = 4, bt = 4; const byBar = kids(part, "measure").map(m => {
     kids(m, "attributes").forEach(a => { const t = kid(a, "time"); if (t) { b = parseInt(txt(t, "beats"), 10) || b; bt = parseInt(txt(t, "beat-type"), 10) || bt; } });
-    return bt === 8 && b % 3 === 0 ? b / 3 : b;
+    const comp = bt === 8 && b % 3 === 0;
+    return { n: comp ? b / 3 : b, q: b * 4 / bt, comp };
   });
-  return drawnBars(xml).map(n => byBar[n - 1] || 4);
+  barMeters.key = key; return (barMeters.val = drawnBars(xml).map(n => byBar[n - 1] || { n: 4, q: 4, comp: false }));
+}
+/* the tempo as a musician writes it: 6/8 → dotted quarter (♩.=80 for ♩=120), 2/2 → half; for the tempo label */
+function tempoBeat(bpm = playBpm()) {
+  const m = S.piece ? barMeters()[0] : null;
+  if (m && m.comp && m.n > 1) return { unit: "q.", bpm: Math.round(bpm / 1.5) };
+  if (m && m.q === m.n * 2) return { unit: "h", bpm: Math.round(bpm / 2) };
+  return { unit: "q", bpm };
+}
+/* bars as they are played (repeats unrolled), each with its drawn bar index (di) and its place in quarters */
+function playBars(tm) {
+  const idx = new Map(); measureEls().forEach((m, i) => idx.set(m.id, i));
+  const bars = []; let end = { t: 0, q: 0 };
+  tm.forEach(e => {
+    if (e.measureOn) { const id = baseId(e.measureOn); bars.push({ t: e.tstamp, q: e.qstamp || 0, di: idx.has(id) ? idx.get(id) : -1 }); }
+    if (e.tstamp >= end.t) end = { t: e.tstamp, q: e.qstamp || 0 };
+  });
+  bars.end = end; return bars;
 }
 /* which part a drawn note belongs to (for "Co słychać") */
-function partOfEl(el) {
+function partOfEl(el, slots = staffSlots()) {
   const m = el && el.closest("g.measure"), st = el && el.closest("g.staff"); if (!m || !st) return null;
-  const slot = staffSlots()[staffsOf(m).indexOf(st)]; return slot ? slot.pid : null;
+  const slot = slots[staffsOf(m).indexOf(st)]; return slot ? slot.pid : null;
 }
-async function play(fromMs) {
-  if (playState) stopPlayback();
-  if (!S.piece) return;
-  const token = ++playToken;
-  await engineReady;
-  if (S.loadedKey !== "view") await doRender();
-  if (token !== playToken) return;
-  let tm;
-  try { tm = tk.renderToTimemap({ includeMeasures: true, includeRests: false }); } catch { hud("Nie da się odtworzyć tych nut"); return; }
-  const bars = []; tm.forEach(e => { if (e.measureOn) bars.push(e.tstamp); });
-  const nBars = measureEls().length;
-  if (pb.loop) { pb.loop.a = Math.min(pb.loop.a, nBars - 1); pb.loop.b = Math.min(pb.loop.b, nBars - 1); }
-  const A = pb.loop ? bars[pb.loop.a] ?? 0 : 0, B = pb.loop ? (bars[pb.loop.b + 1] ?? Infinity) : Infinity;
-  fromMs = pb.loop ? A : Math.max(0, fromMs || 0);
-  const k = (S.baseBpm || 120) / curBpm(), ev = [];
-  tm.forEach(e => (e.on || []).forEach(id => {
-    try {
-      const v = tk.getMIDIValuesForElement(id); if (!v || !(v.pitch > 0)) return;
-      if (e.tstamp >= B) return;
-      const end = Math.min(e.tstamp + v.duration, B); if (end <= fromMs + 20) return;
-      const start = Math.max(e.tstamp, fromMs);      // resuming mid-note: the note keeps sounding
-      const el = document.getElementById(id);
-      const pid = partOfEl(el);
-      ev.push({ id, el, pid, t: (start - fromMs) / 1000 * k, dur: Math.max(0.08, (end - start) / 1000 * k), pitch: v.pitch - partTr(pid), silent: pb.mute.size && pb.mute.has(pid) });
-    } catch {}
-  }));
-  if (!ev.length) { hud("Brak nut do odtworzenia"); return; }
-  ev.sort((a, b) => a.t - b.t);
-  if (S.swing) {         /* T29: eighths in pairs play long-short (about 2:1) */
-    const beat = 60 / curBpm(), half = beat / 2, eps = beat * 0.05, third = beat / 6;
-    ev.forEach(e => { const pos = ((e.t % beat) + beat) % beat; if (e.dur <= half * 1.1) { if (Math.abs(pos - half) < eps) { e.t += third; e.dur -= third; } else if (pos < eps || beat - pos < eps) e.dur += third; } });
+/* the last rendered file is kept: playing the same thing again (from the start, the same loop) starts at once */
+const wavCache = { key: "", url: null };
+function wavKey(ev, clicks, len, a4) {
+  let h = 2166136261 >>> 0; const mix = v => { h = Math.imul(h ^ (Math.round(v * 1000) | 0), 16777619) >>> 0; };
+  const mixS = s => { for (let i = 0; i < s.length; i++) mix(s.charCodeAt(i) / 1000); };
+  ev.forEach(e => { mix(e.t); mix(e.dur); mix(e.pitch); mix(e.silent ? 1 : 0); mixS(e.vk); });
+  clicks.forEach(c => { mix(c.t); mix(c.acc ? 1 : 0); });
+  mix(len); mix(a4); mixS(store.get("ownUse") || "");
+  if (typeof own !== "undefined") mixS(Object.entries(own.byInstr).map(([id, l]) => id + l.map(x => x.midi.toFixed(3)).join()).join());
+  return `${ev.length}:${clicks.length}:${h}`;
+}
+async function renderWav(ev, clicks, fileLen, freq, token) {
+  const Off = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  let sr = PLAY_SR, off;
+  try { off = new Off(1, Math.ceil((fileLen + LEAD) * sr), sr); } catch { sr = 44100; off = new Off(1, Math.ceil((fileLen + LEAD) * sr), sr); }
+  const bus = off.createGain(); bus.gain.value = 0.18; bus.connect(off.destination);
+  for (let i = 0; i < ev.length; i++) {
+    const e = ev[i]; if (!e.silent) e.voice(off, bus, freq(e.pitch), LEAD + e.t, LEAD + e.t + e.dur * 0.95);
+    if (i % 300 === 299) { await yieldNow(); if (token !== playToken) return null; }
   }
-  /* bars in this range, with their beats, for the count-in and the click */
-  const bpb = beatsPerBar(), first = Math.max(0, bars.findIndex((t, i) => t <= fromMs + 1 && (bars[i + 1] ?? Infinity) > fromMs + 1));
-  const barSec = i => (((bars[i + 1] ?? (bars[i] + (bars[i] - (bars[i - 1] ?? bars[i] - 2000)))) - bars[i]) / 1000) * k;
-  const clicks = [], useClick = pb.click !== "off";
-  const countLen = useClick ? barSec(first) : 0;
-  if (useClick) { const n = bpb[first] || 4; for (let j = 0; j < n; j++) clicks.push({ t: j * countLen / n, acc: j === 0 }); }
-  const rangeLen = Number.isFinite(B) ? (B - fromMs) / 1000 * k : Math.max(...ev.map(e => e.t + e.dur));
-  if (pb.click === "all") for (let i = first; i < bars.length && bars[i] < (Number.isFinite(B) ? B : Infinity); i++) {
-    const n = bpb[i] || 4, t0 = (bars[i] - fromMs) / 1000 * k, len = barSec(i);
-    for (let j = 0; j < n; j++) { const t = t0 + j * len / n; if (t >= -0.01 && t < rangeLen - 0.01) clicks.push({ t: countLen + t, acc: j === 0 }); }
+  clicks.forEach(c => clickNote(off, bus, LEAD + c.t, c.acc));
+  /* older Safari gives the result only through oncomplete */
+  const buf = await new Promise((res, rej) => { off.oncomplete = e => res(e.renderedBuffer); const p = off.startRendering(); if (p && p.then) p.then(res, rej); });
+  if (token !== playToken) return null;
+  /* private windows add noise to rendered audio against fingerprinting: then the notes are played live */
+  const ch = buf.getChannelData(0); let lead = 0;
+  for (let i = 0, n = Math.floor(LEAD * sr * 0.8); i < n; i++) lead = Math.max(lead, Math.abs(ch[i]));
+  if (lead > 1e-4) return { live: true };
+  const { blob } = await wavBlob(buf);
+  if (token !== playToken) return null;
+  return { url: URL.createObjectURL(blob) };
+}
+async function play(fromMs, opt = {}) {
+  if (playState || pb.preparing) stopPlayback();
+  if (!S.piece) return;
+  if (metro.on) metroStop();                                   // never two clicks at two tempi
+  const token = ++playToken; pb.preparing = token; setPlayUi(true); prepHud(true);
+  const fail = msg => { if (token !== playToken) return; pb.preparing = 0; prepHud(false); setPlayUi(false); sessionIdle(); if (msg) hud(msg, 3000); };
+  await engineReady;
+  if (S.loadedKey !== "view") { pb.preparing = 0; await doRender(); if (token !== playToken) return; pb.preparing = token; }
+  let tm;
+  try { tm = tk.renderToTimemap({ includeMeasures: true, includeRests: true }); } catch (e) { console.warn(e); fail("Nie da się odtworzyć tych nut"); return; }
+  const bars = playBars(tm), meters = barMeters(), nb = bars.length;
+  if (!nb) { fail("Brak nut do odtworzenia"); return; }
+  /* the bar grid: ms per quarter, a full bar of the metre, and where a bar's beats start (a pickup bar's first beats
+     lie before its notes) */
+  const barEnd = i => (bars[i + 1] || bars.end).t;
+  const mpq = i => { for (let j = i; j >= 0; j--) { const a = bars[j], b = bars[j + 1] || bars.end, dq = b.q - a.q; if (dq > 0) return (b.t - a.t) / dq; } return 60000 / (S.baseBpm || 120); };
+  const meter = i => meters[bars[i].di] || { n: 4, q: 4, comp: false };
+  const full = i => meter(i).q * mpq(i);
+  const gridStart = i => { const L = barEnd(i) - bars[i].t, F = full(i); return i === 0 && L < F - 2 ? bars[i].t - (F - L) : bars[i].t; };
+  let A = 0, B = Infinity;
+  if (pb.loop) {
+    const nd = measureEls().length; pb.loop.a = Math.min(pb.loop.a, nd - 1); pb.loop.b = Math.min(pb.loop.b, nd - 1);
+    let ia = bars.findIndex(b => b.di === pb.loop.a); if (ia < 0) ia = 0;
+    let ib = bars.findIndex((b, i) => i >= ia && b.di === pb.loop.b); if (ib < 0) ib = nb - 1;
+    A = bars[ia].t; B = barEnd(ib);
+  }
+  fromMs = pb.loop ? A : Math.max(0, fromMs || 0);
+  const k = (S.baseBpm || 120) / playBpm(), sec = ms => ms / 1000 * k, ev = [];
+  /* one look-up per part: concert pitch (partTr), its sound, muted or not */
+  const slots = staffSlots(), parts = new Map();
+  const partOf = pid => { let p = parts.get(pid); if (!p) { const vk = instrOfPart(pid); p = { tr: partTr(pid), voice: voiceFor(vk), vk, mute: pb.mute.has(pid) }; parts.set(pid, p); } return p; };
+  tm.forEach(e => (e.on || []).forEach(id => {
+    if (e.tstamp >= B) return;
+    let v; try { v = tk.getMIDIValuesForElement(id); } catch { return; }
+    if (!v || !(v.pitch > 0)) return;
+    const end = Math.min(e.tstamp + v.duration, B); if (end <= fromMs + 20) return;
+    const start = Math.max(e.tstamp, fromMs);      // resuming mid-note: the note keeps sounding
+    const el = document.getElementById(baseId(id)), pid = partOfEl(el, slots), p = partOf(pid);
+    ev.push({ id, el, pid, q0: e.tstamp, t: sec(start - fromMs), dur: Math.max(0.08, sec(end - start)), pitch: v.pitch - p.tr, voice: p.voice, vk: p.vk, silent: p.mute });
+  }));
+  if (!ev.length) { fail("Brak nut do odtworzenia"); return; }
+  ev.sort((a, b) => a.q0 - b.q0);
+  if (S.swing) {         /* T29: eighths in pairs play long-short (about 2:1), counted from the bar's own beats; not in 6/8 */
+    let bi = 0;
+    ev.forEach(e => {
+      while (bi + 1 < nb && bars[bi + 1].t <= e.q0 + 1) bi++;
+      if (meter(bi).comp) return;
+      const qd = mpq(bi), pos = (((e.q0 - gridStart(bi)) % qd) + qd) % qd, eps = qd * 0.05, third = sec(qd / 6);
+      if (e.dur > sec(qd / 2) * 1.1) return;
+      if (Math.abs(pos - qd / 2) < eps) { if (e.q0 >= fromMs) e.t += third; e.dur = Math.max(0.05, e.dur - third); }
+      else if (pos < eps || qd - pos < eps) e.dur += third;
+    });
+  }
+  ev.sort((a, b) => a.t - b.t);
+  const rangeLen = Number.isFinite(B) ? sec(B - fromMs) : ev.reduce((m, e) => Math.max(m, e.t + e.dur), 0);
+  /* count-in: one full bar of the metre (also before a pickup), and the music starts on its own beat: a pickup of
+     one beat in 3/4 hears "1, 2" and comes in on 3; from the middle of a bar the clicks run on the bar's beats */
+  const first = Math.max(0, bars.findIndex((b, i) => b.t <= fromMs + 1 && barEnd(i) > fromMs + 1));
+  const clicks = [];
+  let countLen = 0;
+  if (pb.click !== "off" && !opt.noCount) {
+    const F = full(first), n = meter(first).n, bt = F / n, p = Math.max(0, fromMs - gridStart(first)), cl = p + (p < 2 * bt - 1 ? F : 0);
+    countLen = sec(cl);
+    for (let j = 0; j * bt < cl - 1; j++) clicks.push({ t: sec(j * bt), acc: j % n === 0 });
+  }
+  if (pb.click === "all") for (let i = first; i < nb && bars[i].t < B; i++) {
+    const m = meter(i), bt = full(i) / m.n, g = gridStart(i), e = Math.min(barEnd(i), B);
+    for (let j = 0; j < m.n * 2; j++) { const t = g + j * bt; if (t >= e - 1) break; if (t < bars[i].t - 1 || t < fromMs - 1) continue; clicks.push({ t: countLen + sec(t - fromMs), acc: j === 0 }); }
   }
   ev.forEach(e => { e.t += countLen; });
-  const total = countLen + rangeLen, fileLen = pb.loop ? total : total + 0.5;
-  setPlayUi(true);
-  let url;
-  try {
-    const sr = 44100, Off = window.OfflineAudioContext || window.webkitOfflineAudioContext;
-    const off = new Off(1, Math.ceil((fileLen + LEAD) * sr), sr);
-    const bus = off.createGain(); bus.gain.value = 0.18; bus.connect(off.destination);
-    const voices = {};          // every part sounds like its own instrument (its recording, or its timbre)
-    ev.forEach(e => { if (!e.silent) (voices[e.pid] = voices[e.pid] || voiceForPart(e.pid))(off, bus, 440 * Math.pow(2, (e.pitch - 69) / 12), LEAD + e.t, LEAD + e.t + e.dur * 0.95); });
-    clicks.forEach(c => clickNote(off, bus, LEAD + c.t, c.acc));
-    const buf = await off.startRendering();
-    /* private windows add noise to rendered audio against fingerprinting: then the notes are played live */
-    const ch = buf.getChannelData(0); let lead = 0;
-    for (let i = 0, n = Math.floor(LEAD * sr * 0.8); i < n; i++) lead = Math.max(lead, Math.abs(ch[i]));
-    if (lead > 1e-4) { if (token === playToken) playLive(ev, clicks, total, token, k, fromMs, countLen); return; }
-    url = URL.createObjectURL(wavBlob(buf).blob);
-  } catch (e) { console.warn(e); if (token === playToken) { setPlayUi(false); hud("Nie udało się przygotować dźwięku"); } return; }
-  if (token !== playToken) { URL.revokeObjectURL(url); return; }      // stopped while it was being prepared
+  const total = countLen + rangeLen, fileLen = pb.loop ? total : total + 0.5, a4 = tuner.a4 || 440;
+  const freq = p => a4 * Math.pow(2, (p - 69) / 12);         // the tuner's A: play-along matches the band's tuning
+  const key = wavKey(ev, clicks, fileLen, a4);
+  let url = wavCache.key === key ? wavCache.url : null;
+  if (!url) {
+    let r;
+    try { r = await renderWav(ev, clicks, fileLen, freq, token); } catch (e) { console.warn(e); fail("Nie udało się przygotować dźwięku"); return; }
+    if (!r || token !== playToken) { if (r && r.url) URL.revokeObjectURL(r.url); return; }      // stopped while it was being prepared
+    if (r.live) { pb.preparing = 0; prepHud(false); playLive(ev, clicks, total, token, k, fromMs, countLen, freq); return; }
+    if (wavCache.url) URL.revokeObjectURL(wavCache.url);
+    wavCache.key = key; wavCache.url = url = r.url;
+  }
+  pb.preparing = 0; prepHud(false);
   player.src = url; player.loop = !!pb.loop;
   try { await player.play(); }
   catch (e) {
-    URL.revokeObjectURL(url); setPlayUi(false);
+    if (token !== playToken) return;
+    setPlayUi(false); sessionIdle();
     hud(e && e.name === "NotAllowedError" ? "Dotknij jeszcze raz, żeby posłuchać" : "Nie udało się odtworzyć dźwięku", 3000);
     return;
   }
-  if (token !== playToken) { player.pause(); URL.revokeObjectURL(url); return; }
-  playState = { raf: 0, k, fromMs, url, src: player, ev, countLen, total, loopLen: pb.loop ? total + LEAD : 0, clock: { a: -1, at: 0 } };
-  setPlayUi(true); keepAwake(); follow(token);
+  if (token !== playToken) { player.pause(); return; }
+  playState = { raf: 0, k, fromMs, url, src: player, ev, countLen, total, loopLen: pb.loop ? total + LEAD : 0, clock: { a: -1, at: 0 }, di: -1 };
+  setPlayUi(true); keepAwake(); mediaState("playing"); follow(token);
 }
 async function keepAwake() { try { wakeLock = wakeLock || await navigator.wakeLock?.request("screen"); } catch {} }
-/* live playback through Web Audio: used when rendered audio comes back noisy (no seamless loop there: it restarts) */
-async function playLive(ev, clicks, total, token, k, fromMs, countLen) {
+/* live playback through Web Audio: used when rendered audio comes back noisy (no seamless loop there: it restarts).
+   Notes are handed to the audio clock 8 s ahead, not all at once (a long piece would be thousands of nodes). */
+async function playLive(ev, clicks, total, token, k, fromMs, countLen, freq) {
   const AC = window.AudioContext || window.webkitAudioContext; const ctx = new AC();
   try { await ctx.resume(); } catch {}
   const bus = ctx.createGain(); bus.gain.value = 0.18; bus.connect(ctx.destination);
-  const t0 = ctx.currentTime + 0.12, voices = {};
-  ev.forEach(e => { if (!e.silent) (voices[e.pid] = voices[e.pid] || voiceForPart(e.pid))(ctx, bus, 440 * Math.pow(2, (e.pitch - 69) / 12), t0 + LEAD + e.t, t0 + LEAD + e.t + e.dur * 0.95); });
-  clicks.forEach(c => clickNote(ctx, bus, t0 + LEAD + c.t, c.acc));
-  const src = { get currentTime() { return ctx.currentTime - t0; }, get ended() { return ctx.currentTime - t0 > total + LEAD + 0.3; }, get paused() { return false; }, pause() { try { ctx.close(); } catch {} } };
+  const t0 = ctx.currentTime + 0.12, cl = [...clicks].sort((a, b) => a.t - b.t);
+  let i = 0, c = 0;
+  const pump = () => {
+    if (ctx.state === "closed") return;
+    const until = ctx.currentTime - t0 + 8;
+    for (; i < ev.length && ev[i].t < until; i++) { const e = ev[i]; if (!e.silent) e.voice(ctx, bus, freq(e.pitch), t0 + LEAD + e.t, t0 + LEAD + e.t + e.dur * 0.95); }
+    for (; c < cl.length && cl[c].t < until; c++) clickNote(ctx, bus, t0 + LEAD + cl[c].t, cl[c].acc);
+  };
+  pump(); const timer = setInterval(pump, 1000);
+  const src = { get currentTime() { return ctx.currentTime - t0; }, get ended() { return ctx.currentTime - t0 > total + LEAD + 0.3; }, get paused() { return ctx.state !== "running"; }, pause() { clearInterval(timer); try { ctx.close(); } catch {} } };
   if (token !== playToken) { src.pause(); return; }
-  playState = { raf: 0, k, fromMs, url: null, src, ev, countLen, total, loopLen: 0, live: true, clock: { a: -1, at: 0 } };
-  setPlayUi(true); keepAwake(); follow(token);
+  playState = { raf: 0, k, fromMs, url: null, src, ev, countLen, total, loopLen: 0, live: true, clock: { a: -1, at: 0 }, di: -1 };
+  setPlayUi(true); keepAwake(); mediaState("playing"); follow(token);
 }
 /* the audio element's clock moves in steps on some phones: between steps it is carried on by the frame clock */
 function audioNow(ps) {
@@ -1351,55 +1756,106 @@ function audioNow(ps) {
   let t = a + (now - c.at) / 1000; if (ps.loopLen && t >= ps.loopLen) t -= ps.loopLen; return t;
 }
 /* where playback is now, in score milliseconds (independent of tempo) */
-function rangeTime(ps) { return audioNow(ps) - LEAD - ps.countLen; }
+function rangeTime(ps) { return audioNow(ps) - LEAD - ps.countLen - pb.lag; }
 const playPos = () => playState ? playState.fromMs + Math.max(0, rangeTime(playState)) * 1000 / playState.k : 0;
-/* positions of everything the cursor needs, relative to #pages (they don't change while scrolling) */
+/* the lock screen and headphones: title, play and pause */
+function mediaState(st) {
+  const ms = navigator.mediaSession; if (!ms) return;
+  try {
+    if (st === "playing" && S.piece && typeof MediaMetadata === "function") ms.metadata = new MediaMetadata({ title: S.piece.title || "Nuty", artist: S.piece.composer || "", album: "Solo" });
+    ms.playbackState = st;
+  } catch {}
+}
+if (navigator.mediaSession) {
+  try {
+    navigator.mediaSession.setActionHandler("play", () => { if (!playState && !pb.preparing && S.piece && S.view === "score") { unlockAudio(); play(pb.resumeMs || 0); } });
+    navigator.mediaSession.setActionHandler("pause", () => stopPlayback(true));
+    navigator.mediaSession.setActionHandler("stop", () => stopPlayback(true));
+  } catch {}
+}
+/* a call, Siri, unplugged headphones or the lock screen paused the sound: the button follows and the place is kept
+   (one tap plays on, not two) */
+player.addEventListener("pause", () => {
+  const ps = playState; if (!ps || ps.src !== player || ps.stopping) return;
+  if (player.ended || (!ps.loopLen && player.currentTime >= ps.total + LEAD - 0.1)) return;      // the end: follow() finishes
+  stopPlayback(true);
+});
+/* speed trainer (Soundslice): the loop starts slower and speeds up by itself, e.g. 60 % → 100 %, +5 % every 2 passes.
+   Logic only, for the lead's controls: speedTrainer({ from: 60, to: 100, step: 5, every: 2 }) turns it on (a loop
+   must be set; pb.trainer.pct is the current %), speedTrainer(null) turns it off. */
+function speedTrainer(o) {
+  pb.trainer = o ? { from: o.from || 60, to: o.to || 100, step: o.step || 5, every: o.every || 2, pct: o.from || 60, pass: 0 } : null;
+  setPlayUi(!!playState || !!pb.preparing);
+  if (playState) play(pb.loop ? undefined : playPos());
+  return pb.trainer;
+}
+function trainerPass() {
+  const tr = pb.trainer; if (!tr || !pb.loop) return;
+  tr.pass++; if (tr.pass % tr.every || tr.pct >= tr.to) return;
+  tr.pct = Math.min(tr.to, tr.pct + tr.step); hud(`Tempo ${tr.pct}%`, 1500); play();
+}
+/* positions of everything the cursor needs, relative to #pages (they don't change while scrolling); each bar and
+   its staff lines are measured once, not once per note */
 function cursorMap(ev) {
   const pg = $("#pages"), pr = pg.getBoundingClientRect(), rel = r => ({ x: r.left - pr.left, y: r.top - pr.top, w: r.width, h: r.height });
+  const mIndex = new Map(); measureEls().forEach((m, i) => mIndex.set(m, i));
+  const bars = new Map(), barOf = m => {
+    let b = bars.get(m); if (b) return b;
+    /* the height comes from the staff lines only (notes above or below the staff would make it jump) */
+    const staffs = staffsOf(m), lines = st => { const ls = [...(st || m).children].filter(c => c.tagName === "path").slice(0, 5).map(l => l.getBoundingClientRect()); return ls.length ? { t: Math.min(...ls.map(r => r.top)) - pr.top, b: Math.max(...ls.map(r => r.bottom)) - pr.top } : (r => ({ t: r.y, b: r.y + r.h }))(rel((st || m).getBoundingClientRect())); };
+    const a = lines(staffs[0]), z = lines(staffs[staffs.length - 1]), gap = (a.b - a.t) / 4 || 8, mr = rel(m.getBoundingClientRect());
+    b = { sys: m.closest("g.system") || m, top: a.t - gap * 1.5, h: z.b - a.t + gap * 3, mx: mr.x, mw: mr.w, mi: mIndex.has(m) ? mIndex.get(m) : -1 };
+    bars.set(m, b); return b;
+  };
   const ons = []; let last = null;
   ev.forEach(e => {
     if (!e.el) return;
     if (last && Math.abs(e.t - last.t) < 0.005) { last.els.push(e.el); return; }
-    const m = e.el.closest("g.measure"), sys = e.el.closest("g.system") || m; if (!m) return;
-    /* the height comes from the staff lines only (notes above or below the staff would make it jump) */
-    const staffs = staffsOf(m), lines = st => { const ls = [...(st || m).children].filter(c => c.tagName === "path").slice(0, 5).map(l => l.getBoundingClientRect()); return ls.length ? { t: Math.min(...ls.map(r => r.top)) - pr.top, b: Math.max(...ls.map(r => r.bottom)) - pr.top } : (r => ({ t: r.y, b: r.y + r.h }))(rel((st || m).getBoundingClientRect())); };
-    const a = lines(staffs[0]), z = lines(staffs[staffs.length - 1]), gap = (a.b - a.t) / 4 || 8, mr = rel(m.getBoundingClientRect()), nr = rel(e.el.getBoundingClientRect());
-    last = { t: e.t, els: [e.el], x: nr.x + nr.w / 2, m, sys, top: a.t - gap * 1.5, h: z.b - a.t + gap * 3, mx: mr.x, mw: mr.w, mi: measureEls().indexOf(m) };
+    const m = e.el.closest("g.measure"); if (!m) return;
+    const b = barOf(m), nr = rel(e.el.getBoundingClientRect());
+    last = { t: e.t, els: [e.el], x: nr.x + nr.w / 2, m, ...b };
     ons.push(last);
   });
   return ons;
 }
 function follow(token) {
-  const ps = playState, sc = $("#scroller"), pg = $("#pages"), nBars = measureEls().length;
-  let ons = cursorMap(ps.ev), mapW = pg.offsetWidth;
+  const ps = playState, pg = $("#pages"), nBars = measureEls().length, tpBar = $("#tp-bar"), tpFill = $("#tp-fill");
+  let ons = cursorMap(ps.ev), resized = false;
   if (!ons.length) return;
+  /* zoom or rotation: measure again (noticed by an observer, not by reading the layout every frame) */
+  const ro = window.ResizeObserver ? new ResizeObserver(() => { resized = true; }) : null; if (ro) ro.observe(pg);
   const line = document.createElement("div"); line.className = "playline"; pg.appendChild(line);
   const light = document.createElement("div"); light.className = "barlight"; pg.appendChild(light);
-  let cur = -1, lastSys = null, lit = [];
+  let cur = -1, lastSys = null, lit = [], counting = false, lastT = 0, lastPct = "";
+  const quit = () => { if (ro) ro.disconnect(); };
   const step = () => {
-    if (!playState || token !== playToken) return;
-    if (pg.offsetWidth !== mapW) { ons = cursorMap(ps.ev); mapW = pg.offsetWidth; cur = -1; lastSys = null; }     // zoomed: measure again
-    let T = rangeTime(ps) + ps.countLen;                         // time in the file (count-in included)
+    if (!playState || token !== playToken || playState !== ps) { quit(); return; }
+    if (resized) { resized = false; ons = cursorMap(ps.ev); cur = -1; lastSys = null; counting = false; if (!ons.length) { quit(); return; } }
+    const T = rangeTime(ps) + ps.countLen;                       // time in the file (count-in included)
+    if (ps.loopLen && T < lastT - 0.5) { trainerPass(); if (playState !== ps) { quit(); return; } }    // the loop came round again
+    lastT = T;
     if (T < ps.countLen) {                                       // counting in: the first bar waits, lit
-      const o = ons[0]; light.style.cssText = `width:${o.mw}px;height:${o.h}px;transform:translate(${o.mx}px,${o.top}px);opacity:.6`;
-      line.style.opacity = "0"; $("#tp-bar").textContent = "…"; ps.raf = requestAnimationFrame(step); return;
+      if (!counting) { counting = true; cur = -1; const o = ons[0]; light.style.cssText = `width:${o.mw}px;height:${o.h}px;transform:translate(${o.mx}px,${o.top}px);opacity:.6`; line.style.opacity = "0"; tpBar.textContent = "…"; ps.di = -1; }
+      ps.raf = requestAnimationFrame(step); return;
     }
-    line.style.opacity = "1";
+    if (counting) { counting = false; line.style.opacity = "1"; }
     let i = cur < 0 || ons[cur].t > T ? 0 : cur; while (i + 1 < ons.length && ons[i + 1].t <= T) i++;
     const o = ons[i], nx = ons[i + 1];
     if (i !== cur) {
       lit.forEach(el => el.classList.remove("playing")); lit = o.els; lit.forEach(el => el.classList.add("playing")); cur = i;
       light.style.cssText = `width:${o.mw}px;height:${o.h}px;transform:translate(${o.mx}px,${o.top}px)`;
-      $("#tp-bar").textContent = `${o.mi + 1} / ${nBars}`;
+      line.style.height = o.h + "px";
+      if (ps.di !== o.mi) { ps.di = o.mi; tpBar.textContent = `${o.mi + 1} / ${nBars}`; }
       if (o.sys !== lastSys) { lastSys = o.sys; if (pb.follow) scrollToLine(o); }
     }
     /* the line glides to the next note on the same line, or to the end of the bar */
     const end = nx && nx.sys === o.sys ? nx : null, span = (end ? end.t : o.t + 0.5) - o.t, f = Math.max(0, Math.min(1, (T - o.t) / (span || 1)));
     const x = o.x + ((end ? end.x : o.mx + o.mw - 4) - o.x) * (end ? f : Math.min(f, 0.6));
-    line.style.height = o.h + "px"; line.style.transform = `translate(${x.toFixed(1)}px,${o.top}px)`;
-    $("#tp-fill").style.width = Math.min(100, (T / ps.total) * 100).toFixed(2) + "%";
+    line.style.transform = `translate(${x.toFixed(1)}px,${o.top}px)`;
+    const pct = Math.min(100, (T / ps.total) * 100).toFixed(1); if (pct !== lastPct) { lastPct = pct; tpFill.style.width = pct + "%"; }
     if (!ps.loopLen && (ps.src.ended || T > ps.total + 0.3)) {
-      if (ps.live && pb.loop) { play(); return; }
+      quit();
+      if (ps.live && pb.loop) { trainerPass(); if (playState === ps) play(); return; }
       stopPlayback(); pb.resumeMs = 0; return;
     }
     ps.raf = requestAnimationFrame(step);
@@ -1439,13 +1895,25 @@ $("#btn-restart").addEventListener("click", () => {
 });
 /* the loop button turns a 4-bar loop on (from the bar being played or chosen); the slider above the bar moves its ends */
 $("#btn-loop").addEventListener("click", () => {
-  if (pb.loop || pb.pick) { pb.loop = null; pb.pick = false; drawLoop(); syncLoopUi(); if (playState) play(playPos()); return; }
+  if (pb.loop) { pb.loop = null; drawLoop(); syncLoopUi(); if (playState) play(playPos()); return; }
   const n = measureEls().length; if (!n) return;
   let a = S.fromBar >= 0 ? S.fromBar : 0;
-  if (playState) { const cur = parseInt($("#tp-bar").textContent, 10); if (cur > 0) a = cur - 1; }
-  pb.loop = { a: Math.min(a, n - 1), b: Math.min(n - 1, a + 3) }; drawLoop(); syncLoopUi();
+  if (playState && playState.di >= 0) a = playState.di;
+  /* nothing chosen: the bars looped last time in this piece come back */
+  const mem = !playState && S.fromBar < 0 ? loopMemory() : null;
+  pb.loop = mem && mem.b < n ? mem : { a: Math.min(a, n - 1), b: Math.min(n - 1, a + 3) }; drawLoop(); syncLoopUi();
   if (playState) play();
 });
+/* the last loop of each piece (per device), so practice can pick up where it was */
+function loopMemory(set) {
+  const id = S.piece && S.piece.id; if (!id) return null;
+  let all = {}; try { all = JSON.parse(store.get("loops", "{}")) || {}; } catch {}
+  if (set === undefined) { const l = all[id]; return l && Number.isInteger(l.a) && Number.isInteger(l.b) && l.a <= l.b ? { a: l.a, b: l.b } : null; }
+  if (all[id] && all[id].a === set.a && all[id].b === set.b) return;
+  delete all[id]; all[id] = { a: set.a, b: set.b };
+  const ids = Object.keys(all); if (ids.length > 300) delete all[ids[0]];
+  store.set("loops", JSON.stringify(all));
+}
 /* loop slider: two big handles that snap to bars (Flat, Tomplay); the band on the music follows at once */
 (() => {
   const track = $("#lb-track"); let drag = null;
@@ -1453,8 +1921,9 @@ $("#btn-loop").addEventListener("click", () => {
   ["lb-a", "lb-b"].forEach(id => $("#" + id).addEventListener("pointerdown", e => { drag = id; e.target.setPointerCapture?.(e.pointerId); e.preventDefault(); }));
   track.addEventListener("pointerdown", e => { if (e.target.closest(".lb-th") || !pb.loop) return; const v = valAt(e.clientX); drag = Math.abs(v - pb.loop.a) <= Math.abs(v - pb.loop.b) ? "lb-a" : "lb-b"; move(e); });
   const move = e => {
-    if (!drag || !pb.loop) return; const v = valAt(e.clientX), L = pb.loop;
+    if (!drag || !pb.loop) return; const v = valAt(e.clientX), L = pb.loop, a = L.a, b = L.b;
     if (drag === "lb-a") L.a = Math.min(v, L.b); else L.b = Math.max(v, L.a);
+    if (L.a === a && L.b === b) return;                        // same bar: nothing to redraw
     drawLoop(); syncLoopUi(); navigator.vibrate?.(4);
   };
   window.addEventListener("pointermove", move);
@@ -1467,13 +1936,12 @@ function measureAt(x, y) {
   measureEls().forEach(m => { const r = m.getBoundingClientRect(); const dx = Math.max(r.left - x, 0, x - r.right), dy = Math.max(r.top - y, 0, y - r.bottom), d = dy + dx * 2; if (d < bd) { bd = d; best = m; } });
   return bd < 120 ? best : null;
 }
-/* the loop: tap the first and the last bar; afterwards a tap moves the nearer end (also while playing) */
+/* with a loop on, a tap on a bar moves the nearer end of the loop there (also while playing) */
 function setLoopBar(di) {
-  if (pb.pick === "first") { pb.loop = { a: di, b: di }; pb.pick = "last"; hud("Teraz ostatni takt", 2500); }
-  else if (pb.pick === "last") { pb.loop = { a: Math.min(pb.loop.a, di), b: Math.max(pb.loop.a, di) }; pb.pick = false; }
-  else { const L = pb.loop; if (di < L.a) L.a = di; else if (di > L.b) L.b = di; else if (di - L.a <= L.b - di) L.a = di; else L.b = di; }
+  const L = pb.loop; if (!L || di < 0) return;
+  if (di < L.a) L.a = di; else if (di > L.b) L.b = di; else if (di - L.a <= L.b - di) L.a = di; else L.b = di;
   drawLoop(); syncLoopUi();
-  if (playState && !pb.pick) play();
+  if (playState) play();
 }
 function drawLoop() {
   $$("#pages .loopband").forEach(x => x.remove());
@@ -1488,7 +1956,8 @@ function drawLoop() {
   rows.forEach(r => { const d = document.createElement("div"); d.className = "loopband"; d.style.cssText = `left:${pc((r.l - pr.left) / W)};top:${pc((r.t - pr.top - 4) / H)};width:${pc((r.r - r.l) / W)};height:${pc((r.b - r.t + 8) / H)}`; pg.appendChild(d); });
 }
 function syncLoopUi() {
-  $("#btn-loop").setAttribute("aria-pressed", String(!!(pb.loop || pb.pick)));
+  $("#btn-loop").setAttribute("aria-pressed", String(!!pb.loop));
+  if (pb.loop) loopMemory(pb.loop);
   const lb = $("#loopbar"), n = measureEls().length; lb.hidden = !pb.loop || n < 2;
   if (pb.loop && n > 1) {
     const pa = pb.loop.a / (n - 1), pbb = pb.loop.b / (n - 1);
@@ -1500,7 +1969,7 @@ function syncLoopUi() {
   $("#loop-s").textContent = "";
 }
 $("#loop-row").addEventListener("click", () => {
-  if (pb.loop) { pb.loop = null; pb.pick = false; drawLoop(); syncLoopUi(); if (playState) play(playPos()); }
+  if (pb.loop) { pb.loop = null; drawLoop(); syncLoopUi(); if (playState) play(playPos()); }
   else closeSheetThen(() => $("#btn-loop").click());
 });
 /* practice sheet: speed, click, parts */
@@ -1550,12 +2019,17 @@ if (window.ResizeObserver) new ResizeObserver(([e]) => $("#score").style.setProp
     if (acc > 24) dock.classList.add("min"); else if (acc < -24) dock.classList.remove("min");
   }, { passive: true });
 })();
-document.addEventListener("visibilitychange", () => { if (document.hidden) stopPlayback(true); });
+/* the screen locks or another app comes up: the sound file plays on (pause sits on the lock screen); live playback
+   cannot, so it stops and keeps its place. Back again: the screen stays awake and the cursor carries on. */
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { if (playState && playState.live) stopPlayback(true); else if (pb.preparing) stopPlayback(); }
+  else if (playState) keepAwake();
+});
 
 /* ---------------- Print & export ---------------- */
 async function printScore() {
   await engineReady; stopPlayback();
-  tk.setOptions(a4Options());
+  tk.setOptions(a4Options({}, 1));                 // the paper size, as the PDF (not the screen's zoom)
   tk.loadData(processedXml());
   let html = "";
   for (let i = 1; i <= tk.getPageCount(); i++) html += `<div class="pg">${tk.renderToSVG(i)}</div>`;
@@ -1664,7 +2138,7 @@ async function savePdf(send) {
     if (!shared) {
       files.forEach(f => download(f.name, f, "application/pdf"));
       if (send) { location.href = `mailto:?subject=${encodeURIComponent(title)}`; hud("Pobrano. Dołącz plik do wiadomości.", 4000); }
-      else hud(files.length > 1 ? `Pobrano ${files.length} pliki PDF` : "Pobrano " + files[0].name, 3000);
+      else hud(files.length > 1 ? `Pobrano ${files.length} ${plural(files.length, "plik", "pliki", "plików")} PDF` : "Pobrano " + files[0].name, 3000);
     }
     else hud("Gotowe", 1200);
   } catch (e) { console.error(e); hud("Nie udało się zapisać PDF. Spróbuj jeszcze raz.", 4000); }
@@ -1702,7 +2176,15 @@ async function shareXml() {
   if (!S.piece) return;
   const name = safeName(S.piece.title) + ".musicxml";
   let xml;
-  try { xml = transposeXmlString(processedXml(), S.iv); } catch { xml = S.piece.xml; }
+  try {
+    xml = transposeXmlString(processedXml(), S.iv);
+    /* every transposing part says how it sounds (<transpose>), so other programs play it in tune: its instrument's
+       transposition (a key change moves written and sounding notes alike); a part read for another instrument (a
+       preset) is written for the player's instrument */
+    const doc = parseXml(xml), read = readingPartId();
+    kids(doc.documentElement, "part").forEach(p => { const pid = p.getAttribute("id"); setTranspose(doc, p, trIv(S.preset >= 0 && pid === read ? mainInstr().tr || 0 : partTr(pid))); });
+    xml = new XMLSerializer().serializeToString(doc);
+  } catch (e) { console.warn(e); xml = S.piece.xml; }
   const type = "application/vnd.recordare.musicxml+xml";
   try {
     const file = new File([xml], name, { type });
@@ -1752,8 +2234,7 @@ function buildClefSheet() {
     b.innerHTML = `${glyph(gl)}<span class="grow"><b>${esc(label)}</b>${v === easiest ? `<small>Najmniej linii dodanych</small>` : ""}</span><span class="radio"></span>`;
     b.addEventListener("click", () => {
       const oct = S.readOct || 0, f = fitFor(v);
-      S.clef = v; S.readOct = f.oct; S.clefMine = true;
-      if (S.clef === "bass" || S.clef === "tenor") maybeTrombone();
+      S.clef = v; S.readOct = f.oct; S.clefMine = true;          // the piece's instrument stays what it is
       $("#clef-hint").textContent = f.oct < oct ? "Oktawę niżej: nuty mieszczą się na pięciolinii." : f.oct > oct ? "Oktawę wyżej: nuty mieszczą się na pięciolinii." : "";
       buildClefSheet(); changed();
     });
@@ -1762,15 +2243,31 @@ function buildClefSheet() {
 }
 
 /* ---------------- Key sheet ---------------- */
+/* "Nuty na inny instrument": music written for `from`, read by the player on their own instrument (profile): the
+   interval is the difference of the two transpositions, the octave the one that suits the player's instrument (range,
+   comfort, ledger lines), the clef the player's own. Indexes are stored with each piece, so new presets are appended
+   and only the display order changes. */
 const PRESETS = [
-  { t: "Trąbka, klarnet", s: "w B", iv: { d: -8, s: -14 } },
-  { t: "Waltornia", s: "w F", iv: { d: -4, s: -7 } },
-  { t: "Saksofon altowy", s: "w Es", iv: { d: -12, s: -21 } },
-  { t: "Skrzypce, flet", s: "oktawę niżej", iv: { d: -7, s: -12 } },
-  { t: "Puzon, eufonium, baryton", s: "w B, klucz wiolinowy", iv: { d: -8, s: -14 } }
+  { t: "Trąbka, klarnet", s: "w B", from: "trabka" },
+  { t: "Waltornia", s: "w F", from: "waltornia" },
+  { t: "Saksofon altowy", s: "w Es", from: "sax-a" },
+  { t: "Skrzypce, flet", s: "w C", from: "flet" },
+  { t: "Puzon, eufonium, baryton", s: "w B, klucz wiolinowy", from: "baryton" },
+  { t: "Klarnet A", s: "w A", from: "klarnet-a" }
 ];
-/* indexes are stored with each piece, so new presets are appended and only the display order changes */
-const PRESET_ORDER = [4, 0, 1, 2, 3];
+const PRESET_ORDER = [4, 0, 1, 2, 5, 3];
+function presetRead(idx) {
+  const X = instrById(PRESETS[idx].from), Y = mainInstr(), tx = trIv(X.tr), ty = trIv(Y.tr);
+  const doc = parseXml(S.piece.xml), part = kids(doc.documentElement, "part").find(p => p.getAttribute("id") === readingPartId());
+  let oct = 0, clef = Y.clef;
+  if (part) {
+    const ps = partPitches(part).map(m => m - (X.tr || 0)), idx = partIdx(part).map(i => i - tx.d);
+    if (ps.length) oct = octaveFor(ps, Y, idx);
+    const w = partIdx(part).map(i => i + ty.d - tx.d + 7 * oct); let best = ledgerCost(w, Y.clef) - 0.5;
+    clefsOf(Y).filter(c => c !== Y.clef && CLEF_LINES[c] != null).forEach(c => { const v = ledgerCost(w, c); if (v < best) { best = v; clef = c; } });
+  }
+  return { iv: fixEnharmonic({ d: ty.d - tx.d + 7 * oct, s: (Y.tr || 0) - (X.tr || 0) + 12 * oct }, S.srcKey.fifths), clef: CLEF_LINES[clef] != null ? clef : "treble" };
+}
 function dstFForK(k) { let f = S.srcKey.fifths + 7 * k; while (f > 6) f -= 12; while (f < -6) f += 12; return f === 6 ? -6 : f; }
 function kOct() {
   const s = S.iv.s; let k = ((s % 12) + 12) % 12; if (k > 6) k -= 12;
@@ -1800,21 +2297,22 @@ function buildKeySheet() {
   }
   const PL = $("#preset-list"); PL.innerHTML = "";
   [-1, ...PRESET_ORDER].forEach(idx => {
-    const p = idx < 0 ? { t: "Nie" } : PRESETS[idx];
+    const p = idx < 0 ? { t: "Nie" } : PRESETS[idx], r = idx < 0 ? null : presetRead(idx);
     const b = document.createElement("button"); b.className = "li tap"; b.dataset.p = idx;
-    b.innerHTML = `<span class="radio"></span><span class="grow">${esc(p.t)}${p.s ? `<small>${esc(p.s)}</small>` : ""}</span>`;
+    b.innerHTML = `<span class="radio"></span><span class="grow">${esc(p.t)}${p.s ? `<small>${esc(p.s)} · ${esc(intervalPl(r.iv))}</small>` : ""}</span>`;
     b.addEventListener("click", () => {
-      if (idx < 0) { if (S.preset >= 0) S.iv = { d: 0, s: 0 }; S.preset = -1; }
-      else { S.iv = fixEnharmonic(PRESETS[idx].iv, S.srcKey.fifths); S.clef = "bass"; S.preset = idx; maybeTrombone(); }
+      if (idx < 0) { if (S.preset >= 0) { S.iv = { d: 0, s: 0 }; S.readOct = 0; } S.preset = -1; }
+      else { const q = presetRead(idx); S.iv = q.iv; S.clef = q.clef; S.readOct = 0; S.clefMine = true; S.preset = idx; }
       ensureOnStaff();
       changed();
     });
     PL.appendChild(b);
   });
-  const solo = S.parts.find(p => p.keep) || S.parts[0];
-  const inB = solo && (solo.transp === -2 || /\b(in|w)\s*(Bb|B♭|B)(?![a-z])/i.test(solo.name) || /tr[aą]bk|trumpet|klarnet|clarinet/i.test(solo.name));
-  $("#preset-hint").hidden = !inB;
-  $("#preset-hint").textContent = `Nuty na „${solo ? solo.name : ""}”? Wybierz „Trąbka, klarnet”.`;
+  /* the part is written for a transposing instrument the player does not play: say which preset reads it */
+  const solo = S.parts.find(p => p.id === readingPartId()) || S.parts[0], pc = t => (((t || 0) % 12) + 12) % 12;
+  const tr = solo ? (partTr(solo.id) || -solo.transp || 0) : 0, hint = tr && pc(tr) !== pc(mainInstr().tr) ? PRESET_ORDER.map(i => PRESETS[i]).find(p => pc(instrById(p.from).tr) === pc(tr)) : null;
+  $("#preset-hint").hidden = !hint;
+  $("#preset-hint").textContent = hint ? `Nuty na „${partLabel(solo)}”? Wybierz „${hint.t}”.` : "";
   syncKeySheet();
 }
 /* quick named intervals: a second, third, fourth or fifth up or down */
@@ -1836,7 +2334,7 @@ function syncKeySheet() {
   if (kn.textContent && kn.textContent !== nk && canAnimate()) { kn.classList.remove("bump"); void kn.offsetWidth; kn.classList.add("bump"); }
   kn.textContent = nk;
   $("#key-desc").textContent = moved ? `${cap(intervalPl(S.iv))} · oryginał: ${keyName(S.srcKey.fifths, S.srcKey.mode)}` : "Jak w oryginale";
-  $("#key-range").value = String(k);
+  $("#key-range").value = String(k); $("#key-range").setAttribute("aria-valuetext", nk);   // a screen reader says "F-dur", not "-1"
   if (!slider.dragging) placeHandle();
   const h = $("#handle");
   h.textContent = keyName(S.srcKey.fifths + intervalFifths(S.iv), S.srcKey.mode).replace(/-(dur|moll)$/, "");
@@ -1903,45 +2401,13 @@ function syncLayout() {
   $("#layout-box").hidden = !S.hasLines; $$("#layoutseg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.layout === S.layout)));
   $$("#pageseg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.page === S.page)));
 }
-$$("#pageseg button").forEach(b => b.addEventListener("click", () => { S.page = b.dataset.page; syncLayout(); S.loadedKey = null; changed(); }));
+$$("#pageseg button").forEach(b => b.addEventListener("click", () => { S.page = b.dataset.page; S.pageMine = true; syncLayout(); S.loadedKey = null; changed(); }));
 $$("#underseg button").forEach(b => b.addEventListener("click", () => { S.under = b.dataset.u; syncArrange(); changed(); }));
 $("#swing").addEventListener("change", e => { S.swing = e.target.checked; S.dirty = true; autosave(); if (playState) play(playPos()); });
 function syncArrange() { $$("#underseg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.u === (S.under || "")))); $("#swing").checked = !!S.swing; }
-/* T25 sheet */
-const voice = { i: 3, l: 1 };
-const VOICE_DESC = { 1: "Łatwy: drugi głos idzie równolegle, zawsze ten sam odstęp. Dobry dla dzieci.", 2: "Średni: gdy melodia skacze, drugi głos często zostaje na miejscu. Mniej ruchu, łatwiej grać.", 3: "Zaawansowany: drugi głos wybiera tercję albo sekstę tak, żeby poruszać się jak najmniej. Płynna, samodzielna linia." };
-function buildVoiceSheet() {
-  $$("#v-int button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.i === voice.i)));
-  $$("#v-lev button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.l === voice.l)));
-  $("#v-int").hidden = voice.l === 3; $("#v-desc").textContent = VOICE_DESC[voice.l];
-}
-$$("#v-int button").forEach(b => b.addEventListener("click", () => { voice.i = +b.dataset.i; buildVoiceSheet(); }));
-$$("#v-lev button").forEach(b => b.addEventListener("click", () => { voice.l = +b.dataset.l; buildVoiceSheet(); }));
-$("#v-go").addEventListener("click", () => {
-  const first = S.parts.find(p => p.keep); if (!first) return;
-  const xml = secondVoiceXml(S.piece.xml, first.id, { interval: voice.i, level: voice.l });
-  const settings = recordFromState().settings; S.piece.xml = xml; S.piece.origXml = S.piece.origXml || null;
-  loadState(S.piece, { ...settings, keep: [...settings.keep, ...analyseXml(xml).parts.map(p => p.id).filter(id => !settings.keep.includes(id)).slice(-1)] });
-  closeSheetThen(() => { changed(); hud("Dodano drugi głos. Odtwarzanie gra oba.", 3000); });
-});
-/* T27 sheet */
-function buildPartForSheet() {
-  const L = $("#partfor-list"); L.innerHTML = "";
-  [0, 1, 2, 3].forEach(idx => {
-    const p = PRESETS[idx], b = document.createElement("button"); b.className = "li tap";
-    b.innerHTML = `<span class="grow"><b>${esc(p.t)}</b><small>${esc(p.s)}</small></span><svg class="i chev"><use href="#right"/></svg>`;
-    b.addEventListener("click", async () => {
-      const name = p.t.split(",")[0];
-      const xml = partForInstrument(processedXml(), p.iv, S.srcKey.fifths);
-      const piece = { xml, sourceType: "file", title: `${S.piece.title || "Nuty"} (${name})`, composer: S.piece.composer || "", instrument: name };
-      closeSheetThen(() => { openPiece(piece); S.dirty = true; savePiece(); hud(`Gotowe: partia dla ${name.toLowerCase()}`, 3000); });
-    });
-    L.appendChild(b);
-  });
-}
 function buildMoreSheet() {
   syncLayout(); syncArrange();
-  $("#btn-restore").hidden = !(S.piece && S.piece.origXml);
+  $("#btn-restore").hidden = !canRestore();
   const P = $("#parts"); P.innerHTML = "";
   const isPiano = p => p.staves > 1 || PIANO_RE.test(p.name);
   const solo = S.parts.find(p => !isPiano(p));
@@ -2021,43 +2487,76 @@ $("#zoom-out").addEventListener("click", () => setZoom(zoomNow() - .1));
 [["#f-title", "title"], ["#f-composer", "composer"], ["#f-instrument", "instrument"]].forEach(([sel, k]) => {
   $(sel).addEventListener("change", e => { S.piece[k] = e.target.value.trim(); if (k === "title" && !S.piece.title) S.piece.title = "Bez tytułu"; changed(); if (k === "instrument" && openSheetId === "more") buildMoreSheet(); });
 });
-$("#btn-report").addEventListener("click", async () => {
+/* the photo of the notes goes along only when the person says so (it can show more than the music) */
+$("#btn-report").addEventListener("click", () => {
   const p = S.piece || {}, nums = doubtfulBars(p.issues);
   const text = [`Solo ${VERSION}${BUILD ? " · test " + BUILD : ""}: problem z utworem „${p.title || "Bez tytułu"}”.`,
     `Tonacja: ${curKeyName()}; klucz: ${CLEF_PL[curClef()] || ""}; ${cap(intervalPl(S.iv)) || "bez transpozycji"}; wielkość ${Math.round(S.zoom * 100)}%.`,
     nums.length ? `Takty do sprawdzenia: ${nums.join(", ")}.` : "", "Co jest nie tak:", ""].filter(Boolean).join("\n");
   const data = { title: "Solo: zgłoszenie", text };
-  try {
-    /* the original photo goes along only if the system share sheet can carry files; the person picks the app */
-    if (p.images && p.images[0] && navigator.canShare) {
-      const blob = await (await fetch(p.images[0])).blob(), file = new File([blob], "oryginal.jpg", { type: "image/jpeg" });
-      if (navigator.canShare({ files: [file] })) { await navigator.share({ ...data, files: [file] }); return; }
-    }
-    if (navigator.share) { await navigator.share(data); return; }
-  } catch (e) { if (e && e.name === "AbortError") return; }
-  location.href = "mailto:nniewinskame@gmail.com?subject=" + encodeURIComponent("Solo: zgłoszenie") + "&body=" + encodeURIComponent(text);
+  const send = async withPhoto => {
+    try {
+      /* the share call stays inside the tap: no waiting before it */
+      if (withPhoto && navigator.canShare) {
+        const file = new File([dataUrlBlob(p.images[0])], "oryginal.jpg", { type: "image/jpeg" });
+        if (navigator.canShare({ files: [file] })) { await navigator.share({ ...data, files: [file] }); return; }
+      }
+      if (navigator.share) { await navigator.share(data); return; }
+    } catch (e) { if (e && e.name === "AbortError") return; console.warn(e); }
+    location.href = "mailto:nniewinskame@gmail.com?subject=" + encodeURIComponent("Solo: zgłoszenie") + "&body=" + encodeURIComponent(text);
+  };
+  if (p.images && p.images[0] && navigator.canShare) askConfirm("Dołączyć zdjęcie nut?", "Zdjęcie pomaga znaleźć błąd odczytu. Wyślesz je tylko tam, gdzie wybierzesz.", "Dołącz zdjęcie", () => send(true), "Bez zdjęcia", () => send(false));
+  else send(false);
 });
-let delTarget = null;
-function askDelete(p, fromLibrary) {
-  delTarget = { id: p.id, fromLibrary };
-  $("#confirm-t").textContent = `Usunąć „${p.title || "Bez tytułu"}”?`;
-  $("#confirm-text").textContent = "Nuty i zdjęcie znikną z tego urządzenia.";
+/* one question sheet for every "are you sure": delete, restore the reading, attach the photo */
+let delTarget = null, confirmFn = null, confirmAlt = null;
+function askConfirm(title, text, yes, fn, alt, altFn) {
+  delTarget = null; confirmFn = fn; confirmAlt = altFn || null;
+  $("#confirm-t").textContent = title; $("#confirm-text").textContent = text; $("#confirm-yes").textContent = yes;
+  let b = $("#confirm-alt");
+  if (!b) { b = document.createElement("button"); b.id = "confirm-alt"; b.className = "btn tinted wide"; $("#confirm-yes").after(b);
+    b.addEventListener("click", () => { const f = confirmAlt; confirmFn = confirmAlt = null; closeSheet(); if (f) f(); }); }
+  b.textContent = alt || ""; b.hidden = !alt;
+  $("#confirm-yes").classList.toggle("danger", !alt); $("#confirm-yes").classList.toggle("primary", !!alt);   // a choice of two harmless ways is not red
   openSheet("confirm");
+}
+function askDelete(p, fromLibrary) {
+  askConfirm(`Usunąć „${p.title || "Bez tytułu"}”?`, "Nuty i zdjęcie znikną z tego urządzenia.", "Usuń", null);
+  delTarget = { id: p.id, fromLibrary };
 }
 $("#btn-delete").addEventListener("click", () => askDelete(S.piece, false));
 $("#confirm-yes").addEventListener("click", async () => {
+  if (confirmFn) { const f = confirmFn; confirmFn = confirmAlt = null; closeSheet(); f(); return; }     // in the same tap (share needs it)
   const t = delTarget || { id: S.piece && S.piece.id }; delTarget = null;
   if (!t.id) { closeSheet(); return; }
-  await DB.del(t.id);
-  if (t.fromLibrary) { closeSheetThen(() => { hud("Usunięto"); refreshLibrary(); }); return; }
-  S.piece = null; closeSheetThen(() => { hud("Usunięto"); go("home"); });
+  /* kept in memory for "Cofnij"; the piece also leaves its collections and the favourites */
+  let rec = null; try { rec = await DB.get(t.id); } catch (e) { console.warn(e); }
+  try { await DB.del(t.id); } catch (e) { console.warn(e); closeSheet(); hud("Nie udało się usunąć. Spróbuj jeszcze raz.", 3500); return; }
+  const inCols = cols().filter(c => c.items.includes(t.id)).map(c => c.id), wasFav = favs().includes(t.id);
+  saveCols(cols().map(c => ({ ...c, items: c.items.filter(x => x !== t.id) }))); saveFavs(favs().filter(x => x !== t.id));
+  const undo = rec && (async () => {
+    if (!(await putRecord(rec))) return;
+    saveCols(cols().map(c => inCols.includes(c.id) ? { ...c, items: [...new Set([...c.items, t.id])] } : c));
+    if (wasFav) saveFavs([...new Set([...favs(), t.id])]);
+    hud("Przywrócono", 1800); if (S.view === "home") refreshLibrary();
+  });
+  const done = () => { hudAct("Usunięto", "Cofnij", undo, 6000); refreshLibrary(); };
+  if (t.fromLibrary) { closeSheetThen(done); return; }
+  clearTimeout(saveTimer); saveTimer = null; S.piece = null; closeSheetThen(() => { done(); go("home"); });
 });
+/* a short message with one action ("Cofnij"); the action works once */
+function hudAct(msg, label, fn, ms = 4000) {
+  hud(msg, ms); if (!fn) return;
+  const h = $("#toast"), b = document.createElement("button"); b.className = "toast-act"; b.textContent = label;
+  b.addEventListener("click", () => { h.classList.remove("show"); b.remove(); fn(); }, { once: true });
+  h.appendChild(b);
+}
 /* a long press on a piece in the library: open, send, rename, delete */
 let cardPiece = null, cardEl = null;
 function openCardSheet(p, el) { cardPiece = p; cardEl = el; $("#sh-card-t").textContent = p.title || "Bez tytułu"; openSheet("card"); }
-$("#cd-open").addEventListener("click", () => { const p = cardPiece; closeSheetThen(() => openPiece(p, p.settings)); });
-$("#cd-send").addEventListener("click", () => { const p = cardPiece; closeSheetThen(() => { openPiece(p, p.settings); whenDrawn(() => openSheet("share")); }); });
-$("#cd-rename").addEventListener("click", () => { const el = cardEl; closeSheetThen(() => { const t = el && el.querySelector(".t"); if (t) t.click(); }); });
+$("#cd-open").addEventListener("click", () => { const p = cardPiece; closeSheetThen(() => openFromLibrary(p)); });
+$("#cd-send").addEventListener("click", () => { const p = cardPiece; closeSheetThen(async () => { await openFromLibrary(p); whenDrawn(() => openSheet("share")); }); });
+$("#cd-rename").addEventListener("click", () => { const el = cardEl, p = cardPiece; closeSheetThen(() => { const t = el && el.querySelector(".t"); if (t) inlineEdit(t, { value: p.title || "", placeholder: "Tytuł", onSave: v => renameInLibrary(p, "title", v) }); }); });
 $("#cd-del").addEventListener("click", () => { const p = cardPiece; closeSheetThen(() => askDelete(p, true)); });
 
 /* ---------------- Original photo ---------------- */
@@ -2095,7 +2594,7 @@ async function openXmlFile(f) {
 async function addPages(files) {
   $("#read-error").hidden = true;
   for (const f of files) {
-    if (pending.length >= MAX_PAGES) { hud(`Najwyżej ${MAX_PAGES} strony naraz`); break; }
+    if (pending.length >= MAX_PAGES) { hud(`Najwyżej ${MAX_PAGES} stron naraz`); break; }
     try {
       if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) {
         pdfjsLib.GlobalWorkerOptions.workerSrc = "vendor/pdf.worker.min.js";
@@ -2166,7 +2665,7 @@ function drawPending() {
 const cam = { open: false, stream: null, track: null, busy: false, torch: false };
 const camEl = $("#cam"), camVideo = $("#cam-video");
 const CAM_ERR = {
-  NotAllowedError: ["Brak dostępu do aparatu", "Zezwól na aparat w ustawieniach przeglądarki (ikona obok adresu strony) albo wybierz zdjęcie z galerii."],
+  NotAllowedError: ["Brak dostępu do aparatu", "Zezwól na aparat w ustawieniach albo wybierz zdjęcie z galerii."],
   NotFoundError: ["Nie znaleziono aparatu", "Wybierz zdjęcie z galerii."],
   NotReadableError: ["Aparat jest zajęty", "Zamknij inne aplikacje, które z niego korzystają, i spróbuj jeszcze raz."],
   OverconstrainedError: ["Nie udało się włączyć aparatu", "Spróbuj jeszcze raz albo wybierz zdjęcie z galerii."]
@@ -2430,33 +2929,65 @@ function syncSettings() {
   syncInstall();
   const items = NEWS[VERSION] || [];
   $("#news").innerHTML = `<p class="txt"><b>Wersja ${esc(VERSION)}</b></p><ul class="news">${items.map(t => `<li>${esc(t)}</li>`).join("")}</ul>`;
-  const th = store.get("theme") === "dark" ? "dark" : "light";
+  const th = ["dark", "auto"].includes(store.get("theme")) ? store.get("theme") : "light";
   $$("#themeseg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.theme === th)));
   $("#ver").textContent = BUILD ? `${VERSION} · test ${BUILD}` : VERSION;
   DB.all().then(all => {
     $("#store-count").textContent = all.length ? `${all.length} ${plural(all.length, "utwór", "utwory", "utworów")} w bibliotece` : "Biblioteka jest pusta";
   }).catch(() => {});
-  navigator.storage?.estimate?.().then(e => { $("#store-size").textContent = `Zajęte: ${(e.usage / 1048576).toFixed(1).replace(".", ",")} MB${store.get("modelReady") ? ", w tym ok. 150 MB to program do czytania nut" : ""}`; }).catch(() => {});
+  navigator.storage?.estimate?.().then(async e => {
+    /* "persisted": the browser promised not to clear Solo's data when the device runs low on space */
+    const kept = await (navigator.storage.persisted ? navigator.storage.persisted().catch(() => false) : false);
+    $("#store-size").textContent = `Zajęte: ${(e.usage / 1048576).toFixed(1).replace(".", ",")} MB${store.get("modelReady") ? ", w tym ok. 150 MB to program do czytania nut" : ""}${kept ? ". Chronione przed usunięciem" : ""}`;
+  }).catch(e => console.warn(e));
 }
 $$("#themeseg button").forEach(b => b.addEventListener("click", () => {
-  const t = b.dataset.theme; store.set("theme", t);
+  store.set("theme", b.dataset.theme);
   const root = document.documentElement; root.classList.add("theming"); setTimeout(() => root.classList.remove("theming"), 400);
+  applyTheme(); syncSettings();
+}));
+/* "Auto" follows the system (and changes with it, e.g. at night) */
+const darkMq = matchMedia("(prefers-color-scheme: dark)");
+function applyTheme() {
+  const v = store.get("theme"), t = v === "dark" || (v === "auto" && darkMq.matches) ? "dark" : "light";
   document.documentElement.setAttribute("data-theme", t);
   const m = document.querySelector('meta[name="theme-color"]'); if (m) m.setAttribute("content", "#FFC93C");
-  syncSettings();
-}));
+  const cs = document.querySelector('meta[name="color-scheme"]'); if (cs) cs.setAttribute("content", t);
+}
+darkMq.addEventListener?.("change", () => { if (store.get("theme") === "auto") applyTheme(); });
+/* The backup: one JSON file (older versions of Solo read it too) with the pieces and their photos, collections,
+   favourites, the profile and settings, and "Twój dźwięk". It is put together piece by piece as a Blob, so the
+   library is never one giant string in memory. */
+const BACKUP_PREFS = ["profile", "recentInstr", "theme", "sort", "libCol", "click", "metroBeats", "metroBpm", "ownUse", "tunerA4", "tunerTol", "tunerTr", "zoom2", "homrPrefer", "tourDone", "welcomed"];
 async function saveBackup() {
-  const all = await DB.all();
-  if (!all.length) return 0;
-  download(`solo-kopia-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({ app: "solo", version: 2, saved: Date.now(), pieces: all, cols: cols(), favs: favs() }), "application/json");
+  let chunks, cur, size, n;
+  const reset = () => { chunks = []; cur = []; size = 0; n = 0; }, flush = () => { if (cur.length) { chunks.push(new Blob(cur)); cur = []; size = 0; } };
+  reset();
+  try {
+    await DB.each(p => { const j = JSON.stringify(p); cur.push((n++ ? "," : "") + j); size += j.length; if (size > 4e6) flush(); }, reset);
+  } catch (e) { console.warn(e); return { n: 0, how: "error" }; }
+  flush();
+  if (!n) return { n: 0, how: "empty" };
+  const prefs = {}; BACKUP_PREFS.forEach(k => { const v = store.get(k); if (v != null) prefs[k] = v; });
+  let sounds = {}; try { sounds = typeof ownExport === "function" ? ownExport() : {}; } catch (e) { console.warn(e); }
+  const head = JSON.stringify({ app: "solo", version: 3, saved: Date.now(), cols: cols(), favs: favs(), prefs, sounds });
+  const blob = new Blob([head.slice(0, -1), ',"pieces":[', ...chunks, "]}"], { type: "application/json" });
+  const name = `solo-kopia-${new Date().toISOString().slice(0, 10)}.json`;
+  const how = await saveFile(name, blob);
+  if (how === "blocked") hudAct("Kopia jest gotowa", "Zapisz", () => saveFile(name, blob).then(h => { if (h === "shared") backupDone(n); }), 10000);
+  if (how === "shared" || how === "downloaded") backupDone(n);
+  return { n, how };
+}
+function backupDone(n) {
   store.set("backupAt", String(Date.now()));
   const el = $("#backup-nudge"); if (el) el.hidden = true;
-  return all.length;
+  $("#backup-status").textContent = `Zapisano kopię: ${n} ${plural(n, "utwór", "utwory", "utworów")}.`;
 }
-$("#btn-backup").addEventListener("click", async () => {
-  const n = await saveBackup();
-  $("#backup-status").textContent = n ? `Zapisano kopię: ${n} ${plural(n, "utwór", "utwory", "utworów")}.` : "Biblioteka jest pusta.";
-});
+function backupText({ n, how }) {
+  return how === "empty" ? "Biblioteka jest pusta." : how === "error" ? "Nie udało się odczytać biblioteki. Spróbuj jeszcze raz." : how === "cancelled" ? "Nie zapisano kopii." :
+    how === "blocked" ? "Kopia jest gotowa: dotknij „Zapisz” na dole ekranu." : `Zapisano kopię: ${n} ${plural(n, "utwór", "utwory", "utworów")}.`;
+}
+$("#btn-backup").addEventListener("click", async () => { $("#backup-status").textContent = backupText(await saveBackup()); });
 /* A gentle reminder in the library: a few days after the first pieces, then at most monthly,
    and only when something changed since the last copy. Browsers may clear a site's storage. */
 const DAY = 864e5;
@@ -2471,73 +3002,94 @@ function nudgeBackup(all) {
   const due = last ? now - last > 30 * DAY : now - +store.get("libSince") > 3 * DAY;
   el.hidden = !(changed && due);
 }
-$("#nudge-save")?.addEventListener("click", async () => { const n = await saveBackup(); if (n) hud(`Zapisano kopię: ${n} ${plural(n, "utwór", "utwory", "utworów")}`, 3000); });
+$("#nudge-save")?.addEventListener("click", async () => { const r = await saveBackup(); if (r.how !== "blocked") hud(backupText(r), 3000); });
 $("#news-open")?.addEventListener("click", () => { store.set("newsSeen", VERSION); $("#news-nudge").hidden = true; go("settings"); setTimeout(() => $("#news").scrollIntoView({ behavior: "smooth", block: "center" }), 450); });
 $("#news-x")?.addEventListener("click", () => { store.set("newsSeen", VERSION); fadeOut($("#news-nudge"), 180); });
 $("#nudge-x")?.addEventListener("click", () => { store.set("nudgeLater", String(Date.now())); fadeOut($("#backup-nudge"), 180); });
+/* Reading a backup back: everything is checked first (nothing is written from a damaged file), an older copy never
+   overwrites newer changes, and the person is told what came in and what was left out. */
+const PIECE_FIELDS = { title: "string", composer: "string", instrument: "string", xml: "string", sourceType: "string", origXml: "string", keyLabel: "string", clefLabel: "string", created: "number", updated: "number", opened: "number" };
+const DATA_IMG = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+function cleanPiece(p) {
+  if (!p || typeof p !== "object" || typeof p.id !== "string" || !/^[\w-]{1,64}$/.test(p.id) || typeof p.xml !== "string" || !/<score-(partwise|timewise)\b/.test(p.xml)) return null;
+  const out = { id: p.id };
+  Object.entries(PIECE_FIELDS).forEach(([k, t]) => { if (typeof p[k] === t) out[k] = p[k]; });
+  out.title = out.title || ""; out.composer = out.composer || "";
+  if (!["device", "ai", "file", "own", "example"].includes(out.sourceType)) out.sourceType = "file";
+  out.images = Array.isArray(p.images) ? p.images.filter(x => typeof x === "string" && DATA_IMG.test(x)) : [];
+  out.thumb = typeof p.thumb === "string" && DATA_IMG.test(p.thumb) ? p.thumb : null;
+  out.issues = Array.isArray(p.issues) ? p.issues.filter(x => typeof x === "string").slice(0, 1000) : [];
+  out.lines = Array.isArray(p.lines) ? p.lines.filter(l => l && typeof l === "object").map(l => { const o = {}; ["page", "cx", "cy", "w", "h", "W", "H"].forEach(k => (o[k] = Number.isFinite(+l[k]) ? +l[k] : 0)); return o; }) : null;
+  out.settings = p.settings && typeof p.settings === "object" && !Array.isArray(p.settings) ? JSON.parse(JSON.stringify(p.settings)) : null;
+  return out;
+}
+function cleanCol(c) {
+  if (!c || typeof c.id !== "string" || !/^[\w-]{1,40}$/.test(c.id) || typeof c.name !== "string") return null;
+  return { id: c.id, name: c.name.slice(0, 60), color: /^#[0-9a-f]{6}$/i.test(c.color) ? c.color : "#8D8D8D", items: Array.isArray(c.items) ? c.items.filter(x => typeof x === "string") : [] };
+}
 $("#in-backup").addEventListener("change", async e => {
   const f = e.target.files[0]; e.target.value = ""; if (!f) return;
-  try {
-    const j = JSON.parse(await f.text());
-    if (!["solo", "pulpit-nutowy"].includes(j.app) || !Array.isArray(j.pieces)) throw new Error();
-    if (Array.isArray(j.cols)) { const mine = cols(); j.cols.forEach(c => { const m = mine.find(x => x.id === c.id); if (m) m.items = [...new Set([...m.items, ...c.items])]; else mine.push(c); }); saveCols(mine); }
-    if (Array.isArray(j.favs)) saveFavs([...new Set([...favs(), ...j.favs])]);
-    const have = new Map((await DB.all()).map(p => [p.id, p]));
-    let n = 0, newer = 0;
-    for (const p of j.pieces) {
-      if (!p || typeof p.id !== "string" || typeof p.xml !== "string") continue;
-      const cur = have.get(p.id);                 // an older copy never overwrites newer changes
-      if (cur && (cur.updated || 0) > (p.updated || 0)) { newer++; continue; }
-      const clean = { ...p, title: String(p.title || ""), composer: String(p.composer || ""), images: Array.isArray(p.images) ? p.images.filter(s => typeof s === "string" && s.startsWith("data:image/")) : [],
-        thumb: typeof p.thumb === "string" && p.thumb.startsWith("data:image/") ? p.thumb : null };
-      await DB.put(clean); n++;
-    }
-    $("#backup-status").textContent = `Wczytano ${n} ${plural(n, "utwór", "utwory", "utworów")}.` +
-      (newer ? ` ${newer} ${plural(newer, "utwór masz", "utwory masz", "utworów masz")} już w nowszej wersji.` : ""); syncSettings();
-  } catch { $("#backup-status").textContent = "To nie jest kopia zapasowa Solo."; }
+  const st = $("#backup-status"); st.textContent = "Wczytuję kopię…";
+  let j;
+  try { j = JSON.parse(await f.text()); }
+  catch (err) { console.warn(err); st.textContent = err instanceof RangeError ? "Ta kopia jest za duża dla tego urządzenia." : "To nie jest kopia zapasowa Solo albo plik jest uszkodzony."; return; }
+  if (!j || !["solo", "pulpit-nutowy"].includes(j.app) || !Array.isArray(j.pieces)) { st.textContent = "To nie jest kopia zapasowa Solo."; return; }
+  const pieces = j.pieces.map(cleanPiece), bad = pieces.filter(p => !p).length;
+  let have;
+  try { have = new Map((await DB.all()).map(p => [p.id, p])); }
+  catch (err) { console.warn(err); st.textContent = "Nie udało się otworzyć biblioteki. Spróbuj jeszcze raz."; return; }
+  const fresh = !have.size;                     // a new phone: the profile and settings come from the copy as well
+  let n = 0, newer = 0;
+  for (const p of pieces) {
+    if (!p) continue;
+    const cur = have.get(p.id);                 // an older copy never overwrites newer changes
+    if (cur && (cur.updated || 0) > (p.updated || 0)) { newer++; continue; }
+    try { await DB.put(p); n++; } catch (err) { console.warn(err); st.textContent = saveErrorText(err) + ` Wczytano ${n} z ${pieces.length}.`; syncSettings(); refreshLibrary(); return; }
+  }
+  if (Array.isArray(j.cols)) { const mine = cols(); j.cols.map(cleanCol).filter(Boolean).forEach(c => { const m = mine.find(x => x.id === c.id); if (m) m.items = [...new Set([...m.items, ...c.items])]; else mine.push(c); }); saveCols(mine); }
+  if (Array.isArray(j.favs)) saveFavs([...new Set([...favs(), ...j.favs.filter(x => typeof x === "string")])]);
+  let prefs = 0;
+  if (j.prefs && typeof j.prefs === "object") BACKUP_PREFS.forEach(k => {
+    const v = j.prefs[k]; if (typeof v !== "string" || v.length > 20000) return;
+    if (k === "profile") { try { const o = JSON.parse(v); if (!o || !Array.isArray(o.instruments)) return; } catch { return; } }
+    if ((fresh || store.get(k) == null) && store.set(k, v)) prefs++;
+  });
+  if (prefs && typeof applyProfile === "function") applyProfile();
+  let snd = 0; if (j.sounds && typeof ownImport === "function") { try { snd = await ownImport(j.sounds); } catch (err) { console.warn(err); } }
+  st.textContent = [`Wczytano ${n} ${plural(n, "utwór", "utwory", "utworów")}.`,
+    newer ? `${newer} ${plural(newer, "utwór masz", "utwory masz", "utworów masz")} już w nowszej wersji.` : "",
+    bad ? `Pominięte, bo uszkodzone: ${bad}.` : "",
+    snd ? `Twój dźwięk: ${snd} ${plural(snd, "instrument", "instrumenty", "instrumentów")}.` : "",
+    prefs && fresh ? "Profil i ustawienia też." : ""].filter(Boolean).join(" ");
+  syncSettings(); if (prefs && typeof renderProfile === "function") renderProfile();
 });
 
-const NEWS = { "3.9": ["Nuty według zasad zapisu: ósemki i szesnastki łączone belkami według metrum, pauzy pokazują miary, znaki przypominające w następnym takcie.",
-  "Drugi i trzeci głos według zasad prowadzenia głosów: bez kwint i oktaw równoległych, bez krzyżowania, konsonanse na mocnych częściach taktu, zakończenie na tonice.",
-  "Akordy z kadencją (D → T), fortepian gra według metrum (walc w 3/4), bas idzie najbliższą drogą.",
-  "Klucz i oktawa dobierane tak, żeby nuty mieściły się na pięciolinii; nuty poza skalą instrumentu są zaznaczone.",
-  "Partie mieszczą się w wygodnej skali ucznia i w kluczach danego instrumentu.",
-  "Przykład „Wlazł kotek” poprawiony: 3/4, klucz basowy dla puzonu, tekst pod nutami."],
-  "3.8": ["Twój dźwięk: 5 dźwięków nagrywanych ze stroikiem, każdy zapisuje się sam, gdy jest czysty.",
-  "Kolekcje w bibliotece: Ulubione, Ostatnie, Moje i własne. Utwór może być w kilku.",
-  "Dotknij partii: tylko ta, wycisz, zmień, drukuj, wyślij, usuń.","Zakładki: Nuty, Stroik, Metronom, Ja. Nuty dodajesz jednym „+”: zdjęcie, galeria, plik, mail, nowa melodia.",
-  "Przytrzymaj utwór: otwórz, wyślij, zmień nazwę, usuń.",
-  "Ponad 50 instrumentów w rodzinach, z wyszukiwarką. Każda partia osobno do PDF.",
-  "Na start kilka pytań: instrument (kilka), strój, rola. Zmienisz je w zakładce „Ty”.",
-  "Stroik słucha na żywo: nuta, centy, wykres dźwięku, strój A, instrumenty w B, Es, F.",
-  "Strona A4 jak na papierze, powiększanie dwoma palcami jak w PDF.",
-  "Nowy odtwarzacz: takt odliczania, płynny kursor, przewijanie linia po linii, pauza, pętla zmieniana w trakcie grania, metronom w odsłuchu, wyciszanie partii.",
-  "Poprawianie nut: wybierz długość i dotknij pięciolinii; zakładki z ikonami; przesuwanie nut w bok; kropka; dźwięk przy każdej zmianie.",
-  "Nowa melodia zaczyna się od instrumentu, metrum, tonacji i tempa.",
-  "Partie pod tytułem: „+” dopisuje drugi głos, unisono, akordy albo bas dla wybranego instrumentu, z transpozycją. Duet i trio jednym dotknięciem. Puzon I / Puzon II."],
-  "3.7": ["Przycisk „Popraw”: dotknij w pobliżu nuty, żeby ją zmienić. „Takt”: metrum, klucz, znaki, dodawanie i usuwanie taktów, tempo.",
-  "Kilka pytań przed czytaniem: klucz, metrum i znaki przy kluczu poprawiają odczyt.",
-  "Takty, które się nie zgadzają, są zaznaczone na czerwono, z licznikiem do sprawdzenia.",
-  "Pauzy wielotaktowe nie zasłaniają już kolejnych taktów.",
-  "Nuty od 50 do 200%, rozciąganie dwoma palcami, wielkość zapamiętana dla utworu.",
-  "Grana nuta jest wyraźna, a linia idzie za muzyką. Dotknij taktu, żeby grać od niego.",
-  "Szybkie interwały w Tonacji: sekunda, tercja, kwarta, kwinta w górę i w dół.",
-  "Z PDF-u wybierasz strony; do 12 stron naraz.",
-  "Przypomnienie o kopii zapasowej i bezpieczne wczytywanie kopii.",
-  "Odtwarzanie działa też w oknie prywatnym (incognito).",
-  "Nuty ze zdjęcia mają tyle taktów w linii, ile na kartce („Jak w oryginale”, zmiana w Więcej).",
-  "Bemole i krzyżyki odczytane ze zdjęcia są teraz widoczne w nutach.",
-  "Dotknij taktu, a nad nutami pokaże się ta linia ze zdjęcia oryginału.",
-  "Poprawianie nut: dotknij nuty i przesuń ją, zmień długość, dodaj znak, zamień na pauzę. Cofnij i Przywróć odczyt.",
-  "Pusta pięciolinia: napisz własną melodię.",
-  "Wyślij PDF lub obraz przez WhatsApp, e-mail i inne.",
-  "PDF z Gmaila: Udostępnij → Solo (gdy Solo jest zainstalowane).",
-  "Metronom i stroik.",
-  "Aranżacja w Więcej: drugi głos (tercje, seksty, trzy poziomy), akordy lub funkcje pod nutami, partia dla trąbki, saksofonu, waltorni, skrzypiec, swing.",
-  "Mój dźwięk: nagraj jeden długi dźwięk swojego instrumentu, a Solo zagra nuty Twoim brzmieniem.",
-  "Samouczek: 5 krótkich kroków (Ustawienia → Pomoc)."] };
+const NEWS = { "4.0": ["Nowy wygląd: papier, atrament i mosiądz. Większe litery i przyciski, wyraźniejsze kolory.",
+  "Na telefonie nuty są duże i czytelne; strona A4 zostaje do wyboru i do druku.",
+  "Metronom ze stukaniem tempa i akcentami. Stroik z wielką nutą.",
+  "Tonacje molowe z właściwymi akordami. Przedtakt wyrównany we wszystkich partiach.",
+  "Partie dla instrumentów transponujących brzmią poprawnie, także po eksporcie.",
+  "Ponów w poprawianiu nut. Przywróć odczyt pyta i można go cofnąć.",
+  "Bezpieczniejsze zapisywanie na iPhonie i pełniejsza kopia zapasowa."],
+  "3.9": ["Nuty według zasad zapisu: ósemki łączone belkami według metrum, pauzy pokazują miary, znaki przypominające w następnym takcie.",
+  "Drugi i trzeci głos według zasad prowadzenia głosów i akordów fortepianu.",
+  "Klucz i oktawa dobrane tak, żeby nuty mieściły się na pięciolinii.",
+  "Gotowe melodie, kanon, trio z trzech instrumentów, zmiana instrumentu partii i oktawy."] };
 /* ---------------- T22 metronome, T23 tuner ---------------- */
-const metro = { on: false, bpm: 100, beats: 4, ctx: null, next: 0, n: 0, timer: 0, raf: 0, queue: [] };
+const metro = { on: false, bpm: 100, beats: 4, ctx: null, next: 0, n: 0, timer: 0, raf: 0, queue: [], acc: null, dots: [], taps: [], ramp: null };
+/* accents: one flag per beat (the first beat by default); tapping a dot changes it */
+function metroAcc() {
+  if (!metro.acc || metro.acc.length !== metro.beats) {
+    const s = store.get("metroAcc" + metro.beats, "");
+    metro.acc = Array.from({ length: metro.beats }, (_, i) => s.length === metro.beats ? s[i] === "1" : i === 0);
+  }
+  return metro.acc;
+}
+/* the Italian tempo word for a tempo (shown under the number) */
+function tempoName(bpm) {
+  return bpm < 40 ? "Grave" : bpm < 60 ? "Largo" : bpm < 66 ? "Larghetto" : bpm < 76 ? "Adagio" : bpm < 108 ? "Andante" :
+    bpm < 120 ? "Moderato" : bpm < 156 ? "Allegro" : bpm < 176 ? "Vivace" : bpm < 200 ? "Presto" : "Prestissimo";
+}
 function buildToolsSheet() {
   if (S.view !== "metrov") $("#metro-sheet-host").appendChild($("#metro-ui"));
   if (!metro.on) { metro.bpm = S.piece && S.view === "score" ? curBpm() : (+store.get("metroBpm", 100) || 100); const t = S.piece && S.view === "score" ? (processedXml().match(/<beats>(\d+)<\/beats>/) || [])[1] : null; metro.beats = [2, 3, 4, 6].includes(+t) ? +t : (+store.get("metroBeats", 4) || 4); }
@@ -2545,39 +3097,85 @@ function buildToolsSheet() {
 }
 function syncMetro() {
   $("#m-bpm").textContent = metro.bpm;
+  const nm = $("#m-name"); if (nm) nm.textContent = tempoName(metro.bpm);
   $$("#m-meter button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.b === metro.beats)));
-  $("#m-beats").innerHTML = Array.from({ length: metro.beats }, (_, i) => `<i class="${i === 0 ? "one" : ""}"></i>`).join("");
+  const acc = metroAcc();
+  $("#m-beats").innerHTML = acc.map((a, i) => `<button type="button" class="${i === 0 ? "one" : ""}" data-i="${i}" data-acc="${a ? 1 : 0}" aria-pressed="${a}" aria-label="Akcent na ${i + 1}"></button>`).join("");
+  metro.dots = $$("#m-beats > *");
   $("#m-go").innerHTML = `${icon(metro.on ? "stop" : "play")}<span>${metro.on ? "Stop" : "Start"}</span>`;
 }
+$("#m-beats").addEventListener("click", e => {
+  const b = e.target.closest("[data-i]"); if (!b) return;
+  const acc = metroAcc(), i = +b.dataset.i; acc[i] = !acc[i];
+  store.set("metroAcc" + metro.beats, acc.map(a => (a ? "1" : "0")).join(""));
+  b.dataset.acc = acc[i] ? "1" : "0"; b.setAttribute("aria-pressed", String(acc[i]));
+});
 function metroClick(t, accent) {
   const c = metro.ctx, o = c.createOscillator(), g = c.createGain();
   o.frequency.value = accent ? 1500 : 1000; g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(accent ? .9 : .55, t + .002); g.gain.exponentialRampToValueAtTime(.001, t + .06);
   o.connect(g); g.connect(c.destination); o.start(t); o.stop(t + .08);
 }
+const metroBeatLen = () => (metro.beats === 6 ? 30 : 60) / metro.bpm;
+/* look ahead 120 ms, so the clicks stay exact even when the page is busy. When the page was held up (a phone call,
+   a long task), the missed clicks are skipped: the next one comes on its beat, never a burst of them. */
+function metroTick() {
+  const c = metro.ctx; if (!metro.on || !c) return;
+  if (c.state !== "running") {             // a call or Siri interrupted the sound: try again twice a second
+    const t = performance.now(); if (t - (metro.retry || 0) > 500) { metro.retry = t; const r = c.resume?.(); if (r) r.catch(() => {}); }
+    return;
+  }
+  const now = c.currentTime, len = metroBeatLen();
+  if (metro.next < now) { const skip = Math.ceil((now - metro.next) / len); metro.next += skip * len; metro.n += skip; }
+  while (metro.next < now + .12) {
+    const beat = metro.n % metro.beats, acc = metroAcc();
+    if (beat === 0 && metro.ramp && metro.n > 0) metroRampBar();
+    metroClick(metro.next, !!acc[beat]); metro.queue.push({ t: metro.next, beat });
+    metro.next += metroBeatLen(); metro.n++;
+  }
+}
 function metroStart() {
-  const AC = window.AudioContext || window.webkitAudioContext; metro.ctx = metro.ctx || new AC();
-  metro.ctx.resume?.(); metro.on = true; metro.n = 0; metro.next = metro.ctx.currentTime + .08; metro.queue = [];
-  try { navigator.audioSession && !tuner.on && (navigator.audioSession.type = "playback"); } catch {}
-  /* look ahead 120 ms, so the clicks stay exact even when the page is busy */
-  metro.timer = setInterval(() => {
-    while (metro.next < metro.ctx.currentTime + .12) {
-      const beat = metro.n % metro.beats; metroClick(metro.next, beat === 0); metro.queue.push({ t: metro.next, beat });
-      metro.next += (metro.beats === 6 ? 30 : 60) / metro.bpm; metro.n++;
-    }
-  }, 25);
+  if (playState || pb.preparing) stopPlayback(true);                 // never two clicks at two tempi
+  unlockAudio();
+  metro.ctx = fxCtx(); clearTimeout(fx.idle);
+  metro.on = true; metro.n = 0; metro.next = metro.ctx.currentTime + .08; metro.queue = [];
+  metro.timer = setInterval(metroTick, 25);
   const draw = () => {
     if (!metro.on) return;
-    while (metro.queue.length && metro.queue[0].t <= metro.ctx.currentTime) { const q = metro.queue.shift(); $$("#m-beats i").forEach((d, i) => d.classList.toggle("on", i === q.beat)); }
+    let q = null; while (metro.queue.length && metro.queue[0].t <= metro.ctx.currentTime) q = metro.queue.shift();
+    if (q) metro.dots.forEach((d, i) => d.classList.toggle("on", i === q.beat));
     metro.raf = requestAnimationFrame(draw);
   };
   metro.raf = requestAnimationFrame(draw); syncMetro();
+  keepAwake();
 }
-function metroStop() { metro.on = false; clearInterval(metro.timer); cancelAnimationFrame(metro.raf); $$("#m-beats i").forEach(d => d.classList.remove("on")); syncMetro(); }
+function metroStop() {
+  metro.on = false; clearInterval(metro.timer); cancelAnimationFrame(metro.raf); metro.queue = [];
+  metro.dots.forEach(d => d.classList.remove("on")); syncMetro(); fxIdle();
+  if (!playState && !tuner.on) { try { wakeLock?.release(); } catch {} wakeLock = null; }
+}
 $("#m-go").addEventListener("click", () => metro.on ? metroStop() : metroStart());
 const setMetroBpm = v => { metro.bpm = Math.max(30, Math.min(240, Math.round(v))); store.set("metroBpm", metro.bpm); syncMetro(); };
 $("#m-down").addEventListener("click", () => setMetroBpm(metro.bpm - (metro.bpm > 120 ? 4 : 2)));
 $("#m-up").addEventListener("click", () => setMetroBpm(metro.bpm + (metro.bpm >= 120 ? 4 : 2)));
-$$("#m-meter button").forEach(b => b.addEventListener("click", () => { metro.beats = +b.dataset.b; store.set("metroBeats", metro.beats); metro.n = 0; syncMetro(); }));
+$$("#m-meter button").forEach(b => b.addEventListener("click", () => { metro.beats = +b.dataset.b; store.set("metroBeats", metro.beats); metro.n = 0; metro.acc = null; syncMetro(); }));
+/* tap tempo: the average of the last 4 taps; a pause of 2 s starts again */
+function tapTempo(now = performance.now()) {
+  const t = metro.taps; if (t.length && now - t[t.length - 1] > 2000) t.length = 0;
+  t.push(now); if (t.length > 4) t.shift();
+  if (t.length < 2) return null;
+  const bpm = 60000 / ((t[t.length - 1] - t[0]) / (t.length - 1));
+  setMetroBpm(metro.beats === 6 ? bpm / 2 : bpm); return metro.bpm;
+}
+{ const tap = $("#m-tap"); if (tap) tap.addEventListener("pointerdown", e => { e.preventDefault(); tapTempo(); navigator.vibrate?.(6); }); }
+/* the metronome speeds up by itself (Pro Metronome's "Automator"): metroRamp({ to: 120, step: 4, bars: 4 }) adds
+   4 BPM every 4 bars up to 120; metroRamp(null) stops it. Logic only, for the lead's controls. */
+function metroRamp(o) { metro.ramp = o ? { to: Math.min(240, o.to || 120), step: o.step || 4, bars: o.bars || 4, bar: 0 } : null; return metro.ramp; }
+function metroRampBar() {
+  const r = metro.ramp; r.bar++;
+  if (r.bar % r.bars === 0 && metro.bpm < r.to) setMetroBpm(Math.min(r.to, metro.bpm + r.step));
+}
+/* the screen locks or another app comes up: the metronome stops (timers there run late and would stutter) */
+document.addEventListener("visibilitychange", () => { if (document.hidden && metro.on) metroStop(); });
 
 /* T23 tuner, rebuilt after the benchmark (TonalEnergy, Pano, Cleartune, Peterson): it listens ~30 times a second
    (McLeod pitch method), a note is shown only after 3 readings agree, cents are smoothed, the dot glides at 60 fps,
@@ -2589,7 +3187,7 @@ const NOTE_PL = ["C", "Cis", "D", "Es", "E", "F", "Fis", "G", "As", "A", "B", "H
 /* Polish octave names: C2–H2 wielka, C3 mała, C4 razkreślna … */
 const OCTAVE_NAMES = ["subkontra", "kontra", "wielka", "mała", "razkreślna", "dwukreślna", "trzykreślna", "czterokreślna"];
 function syncTuner() {
-  $$("#t-instr button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.tr === tuner.tr)));
+  $$("#t-instr button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.tr === ((tuner.tr % 12) + 12) % 12)));
   $$("#t-tol button").forEach(b => b.setAttribute("aria-pressed", String(+b.dataset.tol === tuner.tol)));
   $("#t-a").textContent = String(tuner.a4);
   const z = tuner.tol, pc = v => 50 + v;            // the meter spans −50…+50 cents
@@ -2602,22 +3200,25 @@ function syncTuner() {
    and it takes the first strong peak, so it does not jump an octave down. The signal is thinned to
    ~12 kHz first so it is quick on older phones, then the result is fine-tuned on the full signal.
    Returns Hz or -1; detectPitch.clarity is 0..1, detectPitch.rms the loudness. */
+const scratch = {};
+function scratchF32(k, n) { let a = scratch[k]; if (!a || a.length < n) a = scratch[k] = new Float32Array(Math.max(n, 4096)); return a.subarray(0, n); }
 function detectPitch(buf, sr, minF = 40, maxF = 1500) {
   detectPitch.clarity = 0;
-  const D = sr > 30000 ? 4 : 2, half = Math.floor(buf.length / D), x = new Float32Array(half);
+  /* working arrays are kept between calls (30 calls a second: no garbage for the collector) */
+  const D = sr > 30000 ? 4 : 2, half = Math.floor(buf.length / D), x = scratchF32("x", half);
   let mean = 0; for (let i = 0; i < half; i++) { let v = 0; for (let k = 0; k < D; k++) v += buf[D * i + k]; x[i] = v / D; mean += x[i]; }
   mean /= half; let rms = 0; for (let i = 0; i < half; i++) { x[i] -= mean; rms += x[i] * x[i]; }
   rms = Math.sqrt(rms / half); detectPitch.rms = rms; if (rms < 0.0008) return -1;          // silence
   const srD = sr / D;
   const maxLag = Math.min(half >> 1, Math.ceil(srD / minF)), minLag = Math.max(2, Math.floor(srD / maxF)), W = half - maxLag;
-  const nsdf = new Float32Array(maxLag + 2);
+  const nsdf = scratchF32("n", maxLag + 2);
   for (let tau = 0; tau <= maxLag + 1; tau++) {
     let acf = 0, m = 0;
     for (let i = 0; i < W; i++) { const a = x[i], b = x[i + tau]; acf += a * b; m += a * a + b * b; }
     nsdf[tau] = m > 0 ? 2 * acf / m : 0;
   }
   /* key maxima: the highest point of each positive region after the first zero crossing */
-  const peaks = []; let tau = 1;
+  const peaks = detectPitch.peaks || (detectPitch.peaks = []); peaks.length = 0; let tau = 1;
   while (tau < maxLag && nsdf[tau] > 0) tau++;
   while (tau < maxLag) {
     while (tau < maxLag && nsdf[tau] <= 0) tau++;
@@ -2626,7 +3227,8 @@ function detectPitch(buf, sr, minF = 40, maxF = 1500) {
     if (best > 0) peaks.push(best);
   }
   if (!peaks.length) return -1;
-  const top = Math.max(...peaks.map(p => nsdf[p])), pick = peaks.find(p => nsdf[p] >= 0.9 * top);
+  let top = -Infinity; for (const p of peaks) if (nsdf[p] > top) top = nsdf[p];
+  const pick = peaks.find(p => nsdf[p] >= 0.9 * top);
   const y1 = nsdf[pick - 1], y2 = nsdf[pick], y3 = nsdf[pick + 1], den = y1 - 2 * y2 + y3;
   const shift = den ? (y1 - y3) / (2 * den) : 0;
   detectPitch.clarity = Math.min(1, y2 - 0.25 * (y1 - y3) * shift);
@@ -2658,7 +3260,20 @@ function releaseMic() {
   clearTimeout(micKeep.timer);
   micKeep.timer = setTimeout(() => { if (tuner.on || (typeof of !== "undefined" && of.stream)) return; try { micKeep.stream && micKeep.stream.getTracks().forEach(t => t.stop()); } catch {} micKeep.stream = null; micDone(); }, 180000);
 }
-document.addEventListener("visibilitychange", () => { if (document.hidden && !tuner.on && !(typeof of !== "undefined" && of.stream) && micKeep.stream) { try { micKeep.stream.getTracks().forEach(t => t.stop()); } catch {} micKeep.stream = null; } });
+/* leaving the app turns the microphone off at once (no red indicator, no battery): the tuner stops ("Włącz stroik"
+   brings it back), a guided recording pauses and listens again on return; the audio session is given back */
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (tuner.on || tuner.starting) tunerStop();
+    if (typeof of !== "undefined" && of.stream) { of.resumeOnShow = of.state === "listen"; stopListening(); }
+    clearTimeout(micKeep.timer);
+    if (micKeep.stream) { try { micKeep.stream.getTracks().forEach(t => t.stop()); } catch {} micKeep.stream = null; }
+    micDone();
+  } else if (typeof of !== "undefined" && of.resumeOnShow) {
+    of.resumeOnShow = false;
+    if (of.state === "listen" && !$("#ownf").hidden) startListening().then(ok => { if (ok && of.state === "listen") { cancelAnimationFrame(of.raf); of.raf = requestAnimationFrame(listenLoop); } });
+  }
+});
 async function openMic() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw Object.assign(new Error("Ta przeglądarka nie daje dostępu do mikrofonu."), { name: "NoMic" });
   /* iPhone: playback sets the audio session to "playback" (music with the silent switch on), and in that mode iOS
@@ -2669,8 +3284,12 @@ async function openMic() {
   clearTimeout(micKeep.timer);
   let stream = micKeep.stream && micKeep.stream.getAudioTracks().some(t => t.readyState === "live") ? micKeep.stream : null;
   if (!stream) {
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } }); }
-    catch (e) { if (e && e.name === "OverconstrainedError") stream = await navigator.mediaDevices.getUserMedia({ audio: true }); else throw e; }
+    /* two quick taps during the permission prompt share one request (no second, never-closed microphone) */
+    micKeep.pending = micKeep.pending || (async () => {
+      try { return await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 } }); }
+      catch (e) { if (e && e.name === "OverconstrainedError") return await navigator.mediaDevices.getUserMedia({ audio: true }); throw e; }
+    })();
+    try { stream = await micKeep.pending; } finally { micKeep.pending = null; }
     micKeep.stream = stream;
   }
   const AC = window.AudioContext || window.webkitAudioContext, rate = stream.getAudioTracks()[0]?.getSettings?.().sampleRate;
@@ -2682,30 +3301,39 @@ async function openMic() {
 }
 function micDone() { try { if (navigator.audioSession && !tuner.on && !(typeof of !== "undefined" && of.stream) && !micKeep.stream) navigator.audioSession.type = "auto"; } catch {} }
 function micError(e) {
-  return e && e.name === "NotAllowedError" ? "Brak zgody na mikrofon. Zezwól w ustawieniach strony (ikona obok adresu)." :
+  return e && e.name === "NotAllowedError" ? (standalone() ? "Brak zgody na mikrofon. Włącz go w Ustawieniach telefonu." : "Brak zgody na mikrofon. Zezwól w ustawieniach przeglądarki.") :
     e && e.name === "NotFoundError" ? "Nie znaleziono mikrofonu." : e && e.name === "NotReadableError" ? "Mikrofon jest zajęty przez inną aplikację." :
     (e && e.message) || "Nie udało się włączyć mikrofonu.";
 }
 async function tunerStart() {
+  if (tuner.on || tuner.starting) return;                          // a second tap while the phone asks: one microphone
+  const gen = tuner.gen = (tuner.gen || 0) + 1; tuner.starting = true;
   $("#t-hz").textContent = "Włączam mikrofon…";
   let m; try { m = await openMic(); }
-  catch (e) { $("#t-hz").textContent = micError(e); hud(micError(e), 4500); return; }
+  catch (e) { tuner.starting = false; if (gen === tuner.gen) $("#t-hz").textContent = micError(e); return; }      // said once, under the needle
+  tuner.starting = false;
+  if (gen !== tuner.gen) { try { m.ctx.close(); } catch {} releaseMic(); micDone(); return; }      // stopped while starting
   tuner.stream = m.stream; tuner.ctx = m.ctx;
   tuner.an = tuner.ctx.createAnalyser(); tuner.an.fftSize = 4096; tuner.buf = new Float32Array(tuner.an.fftSize);
   m.src.connect(tuner.an);
-  Object.assign(tuner, { on: true, hist: [], shown: null, cand: null, candN: 0, lastOn: 0, trace: [] }); syncTuner();
+  Object.assign(tuner, { on: true, hist: [], shown: null, cand: null, candN: 0, lastOn: 0, trace: [], paused: false }); tn.txt.clear(); tn.sized = false; syncTuner();
   $("#t-hz").textContent = "Zagraj długi dźwięk";
   try { wakeLock = wakeLock || await navigator.wakeLock?.request("screen"); } catch {}
   tuner.raf = requestAnimationFrame(tunerLoop);
 }
 function tunerAnalyse(t) {
   /* the phone paused the sound (a call, the screen, another app): one tap brings it back */
-  if (tuner.ctx.state !== "running") { tuner.ctx.resume?.().catch(() => {}); $("#t-hz").textContent = "Dotknij, żeby włączyć"; return; }
+  if (tuner.ctx.state !== "running") {
+    if (t - (tuner.retry || 0) > 500) { tuner.retry = t; const r = tuner.ctx.resume?.(); if (r) r.catch(() => {}); }
+    tuner.paused = true; tnText(tnEls().hz, "Dotknij, żeby włączyć"); return;
+  }
+  tuner.paused = false;
   tuner.an.getFloatTimeDomainData(tuner.buf);
   const f = detectPitch(tuner.buf, tuner.ctx.sampleRate, 27, 1400);
   if (!(f > 0) || detectPitch.clarity < (tuner.shown === null ? 0.9 : 0.85)) { tuner.trace.push({ t, c: null }); return; }
   tuner.hist.push(f); if (tuner.hist.length > 5) tuner.hist.shift();
-  const fm = [...tuner.hist].sort((a, b) => a - b)[tuner.hist.length >> 1];
+  const srt = tuner.srt || (tuner.srt = []); srt.length = 0; for (const v of tuner.hist) srt.push(v); srt.sort((a, b) => a - b);
+  const fm = srt[srt.length >> 1];
   const midi = 69 + 12 * Math.log2(fm / tuner.a4), n = Math.round(midi), c = 100 * (midi - n);
   if (n !== tuner.shown) {
     if (n === tuner.cand) tuner.candN++; else { tuner.cand = n; tuner.candN = 1; }
@@ -2714,49 +3342,73 @@ function tunerAnalyse(t) {
   } else { tuner.ema += 0.3 * (c - tuner.ema); tuner.hz = fm; }
   tuner.lastOn = t; tuner.trace.push({ t, c: tuner.ema });
 }
+/* the tuner's screen parts, looked up once; sizes and colours are re-read only when they can have changed
+   (an observer, every 2 s for the theme), never by a layout read in every frame */
+const tn = { els: null, W: 0, sized: false, cs: null, csAt: 0, txt: new Map() };
+function tnEls() {
+  if (tn.els) return tn.els;
+  tn.els = { box: $("#tuner2"), note: $("#t-note"), oct: $("#t-oct"), cents: $("#t-cents"), hz: $("#t-hz"), dot: $("#t-dot"), meter: $(".tn-meter"), cv: $("#t-trace") };
+  if (window.ResizeObserver) new ResizeObserver(() => { tn.sized = false; }).observe(tn.els.box);
+  return tn.els;
+}
+const tnText = (el, v) => { if (tn.txt.get(el) !== v) { tn.txt.set(el, v); el.textContent = v; } };
+/* the note a player of this transposition reads, with its Polish octave name (the full transposition counts:
+   tenor sax and bass clarinet +14, guitar and double bass +12, piccolo −12, glockenspiel −24) */
+function writtenName(midi, tr = tuner.tr) {
+  const w = midi + tr, oct = Math.floor(w / 12) - 1;
+  return { name: NOTE_PL[((w % 12) + 12) % 12], oct: OCTAVE_NAMES[oct] || "" };
+}
 function tunerLoop(t) {
   if (!tuner.on) return;
   tuner.raf = requestAnimationFrame(tunerLoop);
   if (t - tuner.lastAn > 30) { tuner.lastAn = t; tunerAnalyse(t); }
   while (tuner.trace.length && t - tuner.trace[0].t > 6000) tuner.trace.shift();
-  const box = $("#tuner2"), live = tuner.shown !== null && t - tuner.lastOn < 250, held = tuner.shown !== null && t - tuner.lastOn < 1500;
+  const E = tnEls(), live = tuner.shown !== null && t - tuner.lastOn < 250, held = tuner.shown !== null && t - tuner.lastOn < 1500;
   if (!held && tuner.shown !== null) { tuner.shown = null; tuner.hist = []; }
   const c = tuner.ema, st = !held ? "off" : !live ? "hold" : Math.abs(c) <= tuner.tol ? "ok" : Math.abs(c) <= 15 ? "near" : "far";
-  if (box.dataset.st !== st) box.dataset.st = st;
+  if (E.box.dataset.st !== st) E.box.dataset.st = st;
   if (tuner.shown !== null) {
-    const w = tuner.shown + tuner.tr, name = NOTE_PL[((w % 12) + 12) % 12], oct = Math.floor(w / 12) - 1;
-    $("#t-note").textContent = name; $("#t-oct").textContent = OCTAVE_NAMES[oct] ? `oktawa ${OCTAVE_NAMES[oct]}` : "";
-    const r = Math.round(c);
-    $("#t-cents").textContent = Math.abs(r) <= tuner.tol ? "✓" : r < 0 ? `−${-r} ¢` : `+${r} ¢`;
-    $("#t-cents").setAttribute("aria-label", Math.abs(r) <= tuner.tol ? "Czysto" : r < 0 ? `Za nisko o ${-r} centów` : `Za wysoko o ${r} centów`);
-    $("#t-hz").textContent = `${tuner.hz.toFixed(1)} Hz${tuner.tr ? " · dźwięk zapisany dla instrumentu" : ""}`;
-  } else { $("#t-note").textContent = "–"; $("#t-oct").textContent = ""; $("#t-cents").textContent = ""; $("#t-hz").textContent = tuner.on ? "Zagraj długi dźwięk" : ""; }
+    const wn = writtenName(tuner.shown);
+    tnText(E.note, wn.name); tnText(E.oct, wn.oct ? `oktawa ${wn.oct}` : "");
+    const r = Math.round(c), ok = Math.abs(r) <= tuner.tol;
+    tnText(E.cents, ok ? "✓" : r < 0 ? `−${-r} ¢` : `+${r} ¢`);
+    const al = ok ? "Czysto" : r < 0 ? `Za nisko o ${-r} centów` : `Za wysoko o ${r} centów`; if (E.cents.getAttribute("aria-label") !== al) E.cents.setAttribute("aria-label", al);
+    tnText(E.hz, `${tuner.hz.toFixed(1)} Hz${tuner.tr ? " · dźwięk zapisany dla instrumentu" : ""}`);
+  } else if (!tuner.paused) { tnText(E.note, "–"); tnText(E.oct, ""); tnText(E.cents, ""); tnText(E.hz, tuner.on ? "Zagraj długi dźwięk" : ""); }
   /* the dot glides towards its place (no jumps between readings) */
-  const W = $(".tn-meter").clientWidth, target = held ? Math.max(-50, Math.min(50, c)) / 50 * (W / 2 - 23) : 0;
-  tuner.x += (target - tuner.x) * 0.22; $("#t-dot").style.transform = `translateX(${tuner.x.toFixed(1)}px)`;
+  if (!tn.sized) { tn.sized = true; tn.W = E.meter ? E.meter.clientWidth : 0; }
+  const target = held ? Math.max(-50, Math.min(50, c)) / 50 * (tn.W / 2 - 23) : 0, nx = tuner.x + (target - tuner.x) * 0.22;
+  if (Math.abs(nx - tuner.x) > 0.05 || !held) { tuner.x = nx; E.dot.style.transform = `translateX(${tuner.x.toFixed(1)}px)`; }
   drawTrace(t);
 }
 function drawTrace(t) {
-  const cv = $("#t-trace"), dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight; if (!w) return;
+  const E = tnEls(), cv = E.cv, dpr = window.devicePixelRatio || 1;
+  if (!tn.cvW || !tn.sized) { tn.cvW = cv.clientWidth; tn.cvH = cv.clientHeight; }
+  const w = tn.cvW, h = tn.cvH; if (!w) return;
   if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  if (!tn.cs || t - tn.csAt > 2000 || t < tn.csAt) {
+    const cs = getComputedStyle(document.documentElement); tn.csAt = t;
+    tn.cs = { ok: cs.getPropertyValue("--tn-ok").trim(), ink3: cs.getPropertyValue("--ink-3").trim() || "#999", ink: cs.getPropertyValue("--ink").trim() || "#222" };
+  }
   const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
-  const cs = getComputedStyle(document.documentElement), y = c => h / 2 - Math.max(-50, Math.min(50, c)) / 50 * (h / 2 - 6);
-  g.fillStyle = cs.getPropertyValue("--tn-ok").trim(); g.globalAlpha = .14; g.fillRect(0, y(tuner.tol), w, y(-tuner.tol) - y(tuner.tol)); g.globalAlpha = 1;
-  g.strokeStyle = cs.getPropertyValue("--ink-3").trim() || "#999"; g.lineWidth = 1; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke(); g.setLineDash([]);
-  g.strokeStyle = cs.getPropertyValue("--ink").trim() || "#222"; g.lineWidth = 2.5; g.lineJoin = "round"; g.beginPath();
+  const y = c => h / 2 - Math.max(-50, Math.min(50, c)) / 50 * (h / 2 - 6);
+  g.fillStyle = tn.cs.ok; g.globalAlpha = .14; g.fillRect(0, y(tuner.tol), w, y(-tuner.tol) - y(tuner.tol)); g.globalAlpha = 1;
+  g.strokeStyle = tn.cs.ink3; g.lineWidth = 1; g.setLineDash([4, 4]); g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke(); g.setLineDash([]);
+  g.strokeStyle = tn.cs.ink; g.lineWidth = 2.5; g.lineJoin = "round"; g.beginPath();
   let pen = false;
-  tuner.trace.forEach(p => { const x = w - (t - p.t) / 6000 * w; if (p.c === null) { pen = false; return; } pen ? g.lineTo(x, y(p.c)) : g.moveTo(x, y(p.c)); pen = true; });
+  for (const p of tuner.trace) { const x = w - (t - p.t) / 6000 * w; if (p.c === null) { pen = false; continue; } if (pen) g.lineTo(x, y(p.c)); else g.moveTo(x, y(p.c)); pen = true; }
   g.stroke();
 }
 function tunerStop() {
+  tuner.gen = (tuner.gen || 0) + 1; tuner.starting = false;
   tuner.on = false; cancelAnimationFrame(tuner.raf);
   try { tuner.ctx && tuner.ctx.close(); } catch {} releaseMic();
-  tuner.stream = tuner.ctx = null; tuner.shown = null; tuner.trace = []; $("#tuner2").dataset.st = "off"; micDone();
+  tuner.stream = tuner.ctx = null; tuner.shown = null; tuner.trace = []; tuner.paused = false; tn.txt.clear(); $("#tuner2").dataset.st = "off"; micDone();
   $("#t-note").textContent = "–"; $("#t-oct").textContent = ""; $("#t-cents").textContent = ""; $("#t-hz").textContent = "";
   $("#t-dot").style.transform = ""; tuner.x = 0; drawTrace(performance.now()); syncTuner();
   if (!playState && !metro.on) { try { wakeLock?.release(); } catch {} wakeLock = null; }
 }
-$("#t-go").addEventListener("click", () => tuner.on ? tunerStop() : tunerStart());
+$("#t-go").addEventListener("click", () => (tuner.on || tuner.starting) ? tunerStop() : tunerStart());
 $("#tuner2").addEventListener("click", e => { if (tuner.on && tuner.ctx && tuner.ctx.state !== "running" && !e.target.closest("#t-go")) tuner.ctx.resume(); });
 $$("#t-tol button").forEach(b => b.addEventListener("click", () => { tuner.tol = +b.dataset.tol; store.set("tunerTol", tuner.tol); syncTuner(); }));
 const setA4 = v => { tuner.a4 = Math.max(430, Math.min(450, v)); store.set("tunerA4", tuner.a4); syncTuner(); };
@@ -2764,13 +3416,10 @@ $("#t-a-down").addEventListener("click", () => setA4(tuner.a4 - 1));
 $("#t-a-up").addEventListener("click", () => setA4(tuner.a4 + 1));
 function buildTunerSheet() { $("#tuner-sheet-host").appendChild($("#tuner-ui")); syncTuner(); syncOwn(); if (!tuner.on) tunerStart(); }
 /* which instrument a part is: its name (Puzon II → Puzon), a piano by its two staves, the melody by the piece's instrument */
+/* the instrument for sound and new parts: as namedInstr; a piano part is a piano; unknown: the player's own */
 function instrOfPart(pid) {
-  const dec = declaredOf(pid); if (dec) return dec.id;
-  const p = S.parts && S.parts.find(x => x.id === pid); if (!p) return mainInstr().id;
-  if (p.staves > 1 || PIANO_RE.test(p.name)) return "fortepian";
-  const name = (typeof partLabel === "function" ? partLabel(p) : p.name || "").replace(/ (I|II|III|IV|V)$/, "").trim().toLowerCase();
-  const hit = INSTRUMENTS.find(i => i.name.toLowerCase() === name) || INSTRUMENTS.find(i => name && i.name.toLowerCase().split(" ")[0] === name.split(" ")[0] && i.name.split(" ").length === 1) || INSTRUMENTS.find(i => name.startsWith(i.name.toLowerCase()));
-  return hit ? hit.id : mainInstr().id;
+  const r = partInstr(pid);
+  return r.ins ? r.ins.id : r.piano ? "fortepian" : mainInstr().id;
 }
 /* the player's recording of exactly this instrument, otherwise this instrument's own timbre (never another's recording) */
 function voiceFor(instrId) {
@@ -2779,16 +3428,23 @@ function voiceFor(instrId) {
 }
 const voiceForPart = pid => voiceFor(instrOfPart(pid));
 const noteVoice = () => voiceFor(mainInstr().id);
-$$("#t-instr button").forEach(b => b.addEventListener("click", () => { tuner.tr = +b.dataset.tr; store.set("tunerTr", tuner.tr); syncTuner(); }));
+/* the tuner's instrument letter (C, B, Es, F): the player's own instrument when it is in that letter, with its octave
+   (B for a tenor sax is +14, not +2) */
+$$("#t-instr button").forEach(b => b.addEventListener("click", () => {
+  const v = +b.dataset.tr, m = mainInstr(), own = m.tr || 0;
+  setTunerTr(((own % 12) + 12) % 12 === v ? own : v);
+}));
+/* any instrument's transposition for the tuner (for a picker in the redesigned tuner): setTunerTr(instrById(id).tr) */
+function setTunerTr(tr) { tuner.tr = tr | 0; store.set("tunerTr", tuner.tr); tn.txt.clear(); syncTuner(); }
 
 /* ---------------- T24 tutorial: five steps over the real screen, skippable ---------------- */
 const TOUR = [
   ["#pages", "Nuty", "Dotknij taktu, żeby grać od niego. Dwa palce powiększają stronę."],
   ["#btn-play", "Posłuchaj", "Takt odliczania, potem kursor idzie za muzyką, a strona przewija się sama."],
-  ["#btn-loop", "Pętla", "Dotknij pierwszego i ostatniego taktu. Zmienisz ją w każdej chwili, także w trakcie grania."],
-  ["#btn-tempo", "Tempo", "Wolniej, szybciej, 50%, 75%, metronom w odsłuchu, co słychać."],
+  ["#btn-loop", "Pętla", "Powtarza 4 takty. Przesuń uchwyty albo dotknij taktu, także w trakcie grania."],
+  ["#btn-tempo", "Tempo", "Zwolnij, przyspiesz i włącz metronom."],
   ["#btn-edit", "Popraw", "Wybierz długość i dotknij pięciolinii, albo dotknij nuty, żeby ją zmienić."],
-  ["#btn-tools", "Narzędzia", "Tonacja, klucz, drugi głos, partie, oryginał, wysyłanie, stroik, metronom."]
+  ["#btn-tools", "Narzędzia", "Tonacja, klucz, oryginał i wysyłanie."]
 ];
 let tourI = -1;
 function tourShow() {
@@ -2807,14 +3463,14 @@ $("#tour-next").addEventListener("click", () => { if (++tourI >= TOUR.length) to
 $("#tour-skip").addEventListener("click", tourEnd);
 $("#btn-tour").addEventListener("click", () => {
   const go2 = () => setTimeout(tourStart, 700);
-  if (S.piece) { go("score"); go2(); } else { openPiece({ xml: exampleXml(), sourceType: "example", title: "", composer: null, instrument: "Puzon" }); go2(); }
+  if (S.piece) { go("score"); go2(); } else { openPiece(examplePiece()); go2(); }
 });
 
 /* ---------------- Install (T9) ---------------- */
 let installEvt = null;
 const standalone = () => matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
 function syncInstall() {
-  $("#installed").hidden = !standalone();
+  $("#installed").hidden = !standalone(); $("#install-steps").hidden = standalone();   // the steps only while it is not installed
   $("#btn-install").hidden = standalone() || !installEvt;
   $("#install-steps").hidden = standalone();
 }
@@ -2843,9 +3499,7 @@ async function migrateExample() {
         composer: !p.composer || /beethoven|meow/i.test(p.composer) ? "Melodia ludowa" : p.composer, settings: /<beats>3<\/beats>/.test(p.xml) ? p.settings : { ...(p.settings || {}), iv: { d: 0, s: 0 }, preset: -1 }, thumb: null };
       if (rec.settings && rec.settings.preset === undefined) rec.settings.preset = -1;
       await DB.put(rec);
-      const snap = { piece: S.piece, parts: S.parts, srcKey: S.srcKey, srcClef: S.srcClef, clef: S.clef, iv: S.iv, preset: S.preset, bpm: S.bpm };
-      try { loadState(rec, rec.settings); rec.keyLabel = curKeyName(); rec.thumb = await makeThumb(); await DB.put(rec); } catch (e) { console.warn(e); }
-      Object.assign(S, snap); S.loadedKey = null;
+      try { const src = thumbXml(rec); await saveThumb(rec.id, await makeThumb(src), { keyLabel: src.key }); } catch (e) { console.warn(e); }
     }
     if (S.view === "home") refreshLibrary();
   } catch (e) { console.warn(e); }
@@ -2853,13 +3507,14 @@ async function migrateExample() {
 
 /* T21: files shared to Solo from another app wait in a cache; open them like picked files */
 async function openShared() {
-  if (!/[?&]shared=1/.test(location.search)) return;
+  const m = location.search.match(/[?&]shared=(1|err)/); if (!m) return;
   history.replaceState(history.state, "", location.pathname);
+  if (m[1] === "err") { setTimeout(() => hud("Nie udało się odebrać pliku. Spróbuj jeszcze raz albo zapisz go w Plikach.", 5000), 800); return; }
   try {
     const c = await caches.open("solo-shared"), keys = await c.keys(), files = [];
     for (const k of keys) { const r = await c.match(k); const b = await r.blob(); files.push(new File([b], decodeURIComponent(r.headers.get("x-name") || "plik"), { type: b.type })); await c.delete(k); }
-    if (files.length) handleFiles(files);
-  } catch (e) { console.warn(e); }
+    if (files.length) handleFiles(files); else hud("Nie udało się odebrać pliku.", 4000);
+  } catch (e) { console.warn(e); hud("Nie udało się odebrać pliku.", 4000); }
 }
 
 /* ---------------- Boot ---------------- */
@@ -2872,26 +3527,73 @@ async function openShared() {
   migrateExample(); openShared();
   show("home");
   if (!store.get("welcomed")) {
-    DB.all().then(all => { if (!all.length) $("#welcome").hidden = false; else store.set("welcomed", "1"); }).catch(() => { $("#welcome").hidden = false; });
+    DB.all().then(all => { if (!all.length) $("#welcome").hidden = false; else store.set("welcomed", "1"); }).catch(e => console.warn(e));   // unreadable is not "new here"
   }
-  if ("serviceWorker" in navigator && (location.protocol === "https:" || /^(localhost|127\.0\.0\.1)$/.test(location.hostname))) {
-    // a new version takes over quietly: check when the app comes back to the screen, reload on the library screen
-    const hadController = !!navigator.serviceWorker.controller;
-    navigator.serviceWorker.register("sw.js").then(reg => {
-      document.addEventListener("visibilitychange", () => { if (!document.hidden) reg.update().catch(() => {}); });
-    }).catch(() => {});
-    let pendingReload = false;
-    const reloadIfIdle = () => { if (S.view === "home" && !openSheetId && !readCtl && !cam.open && !pending.length) location.reload(); else pendingReload = true; };
-    navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController) reloadIfIdle(); });
-    // first visit on a host without isolation headers: once the worker is in charge, reload one time to get them
-    let coiTried = false; try { coiTried = !!sessionStorage.getItem("solo:coi"); } catch {}
-    if (!window.crossOriginIsolated && !coiTried) {
-      const go = () => { try { sessionStorage.setItem("solo:coi", "1"); } catch {} if (S.view === "home" && !openSheetId && !cam.open && !pending.length) location.reload(); };
-      if (navigator.serviceWorker.controller) go(); else navigator.serviceWorker.addEventListener("controllerchange", go, { once: true });
-    }
-    window.addEventListener("popstate", () => { if (pendingReload) setTimeout(reloadIfIdle, 600); });
-  }
+  if ("serviceWorker" in navigator && (location.protocol === "https:" || /^(localhost|127\.0\.0\.1)$/.test(location.hostname))) setupUpdates();
+  /* "Open with Solo" on a computer (manifest file_handlers) */
+  if ("launchQueue" in window) launchQueue.setConsumer(async lp => { try { const files = await Promise.all((lp.files || []).map(h => h.getFile())); if (files.length) handleFiles(files); } catch (e) { console.warn(e); } });
 })();
+
+/* A new version waits until the person says so ("Odśwież"), or until Solo is started again: it never reloads the
+   page in the middle of something. The check runs when Solo comes back to the screen (an iPhone app is resumed,
+   not restarted), at most every 30 minutes. */
+function setupUpdates() {
+  const sw = navigator.serviceWorker, bootAt = Date.now();
+  let reloading = false, lastCheck = 0;
+  const busy = () => S.view !== "home" || !!openSheetId || !!readCtl || cam.open || pending.length || [$("#onb"), $("#welcome"), $("#ownf")].some(el => el && !el.hidden);
+  const reload = async () => {
+    if (reloading) return; reloading = true;
+    try { if (saveTimer) await savePiece(); else if (saving) await saving; } catch (e) { console.warn(e); }      // the last edit first
+    location.reload();
+  };
+  const offer = w => {
+    if (!w || !sw.controller) return;          // the very first install needs no reload
+    /* just started and nothing touched yet: take the new version at once (a blink instead of a question) */
+    if (Date.now() - bootAt < 2500 && !busy()) { w.postMessage({ type: "SKIP_WAITING" }); return; }
+    const ask = () => { if (S.view === "home" && !reloading) hudAct("Jest nowa wersja Solo", "Odśwież", () => w.postMessage({ type: "SKIP_WAITING" }), 12000); };
+    ask(); offer.ask = ask;
+  };
+  sw.register("sw.js").then(reg => {
+    if (reg.waiting) offer(reg.waiting);
+    reg.addEventListener("updatefound", () => { const w = reg.installing; if (w) w.addEventListener("statechange", () => { if (w.state === "installed") offer(w); }); });
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden || Date.now() - lastCheck < 30 * 60e3) return;
+      lastCheck = Date.now(); reg.update().catch(e => console.warn(e));
+    });
+  }).catch(e => console.warn(e));
+  const hadController = !!sw.controller;
+  sw.addEventListener("controllerchange", () => { if (hadController) reload(); });
+  /* the update question comes back each time the library is shown again */
+  window.addEventListener("popstate", () => { if (offer.ask) setTimeout(offer.ask, 700); });
+  // first visit on a host without isolation headers: once the worker is in charge, reload one time to get them,
+  // but never in the middle of the first questions or anything else
+  let coiTried = false; try { coiTried = !!sessionStorage.getItem("solo:coi"); } catch {}
+  if (!window.crossOriginIsolated && !coiTried) {
+    const once = () => {
+      if (busy()) { setTimeout(once, 3000); return; }
+      try { sessionStorage.setItem("solo:coi", "1"); } catch {}
+      reload();
+    };
+    if (sw.controller) once(); else sw.addEventListener("controllerchange", once, { once: true });
+  }
+}
+
+/* Safari in a tab (not the icon on the home screen) deletes a site's data after 7 days without a visit, and the
+   installed app has its own, separate storage: say so once in a while, with what to do */
+function safariNotice(all) {
+  const want = !isStandalone() && (isIOS() || /^((?!chrome|chromium|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent))
+    && all.some(p => p.sourceType !== "example") && Date.now() - +store.get("safariLater", 0) > 3 * DAY;
+  let el = $("#safari-nudge");
+  if (!want) { if (el) el.hidden = true; return; }
+  if (!el) {
+    el = document.createElement("div"); el.className = "notice"; el.id = "safari-nudge";
+    el.innerHTML = `<svg class="i"><use href="#info"/></svg><div class="grow"><b>Dodaj Solo do ekranu</b><span>W Safari nuty mogą zniknąć po tygodniu przerwy.</span></div><button class="link" id="safari-how">Jak?</button><button class="x" id="safari-x" aria-label="Później"><svg class="i"><use href="#x"/></svg></button>`;
+    $("#lib").insertBefore(el, $("#backup-nudge") || $("#cols"));
+    $("#safari-how").addEventListener("click", () => { go("settings"); setTimeout(() => { const st = $("#install-steps"); if (st) st.scrollIntoView({ behavior: "smooth", block: "center" }); }, 450); });
+    $("#safari-x").addEventListener("click", () => { store.set("safariLater", String(Date.now())); fadeOut(el, 180); });
+  }
+  el.hidden = false;
+}
 
 /* ---------------- a new melody: the basics first (benchmark: MuseScore, iReal Pro, Flat), then an empty staff ---------------- */
 const nm = { instr: null, time: "4/4", key: 0, bpm: 90, title: "" };
@@ -2899,32 +3601,45 @@ function buildNewSheet() {
   const p = profile(); nm.instr = nm.instr || p.main;
   const ids = [...new Set([...p.instruments, nm.instr])];
   $("#new-instr").innerHTML = ids.map(id => `<button data-i="${id}" aria-pressed="${id === nm.instr}">${esc(instrById(id).name)}</button>`).join("") +
-    `<select id="new-instr-more" aria-label="Inny instrument"><option value="">Inny…</option>${INSTRUMENTS.filter(i => !ids.includes(i.id)).map(i => `<option value="${i.id}">${esc(i.name)}</option>`).join("")}</select>`;
+    `<button data-more aria-label="Inny instrument">${icon("plus")}</button>`;
   $$("#new-time button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.v === nm.time)));
   $("#new-key").value = String(nm.key); $("#new-bpm").textContent = String(nm.bpm);
   $("#new-title").value = nm.title;
-  $("#new-clef").textContent = instrById(nm.instr).clef === "bass" ? "klucz basowy" : "klucz wiolinowy";
+  $("#new-clef").textContent = "klucz " + (CLEF_PL[instrById(nm.instr).clef] || "wiolinowy");
 }
-$("#new-instr").addEventListener("click", e => { const b = e.target.closest("[data-i]"); if (b) { nm.instr = b.dataset.i; buildNewSheet(); } });
+$("#new-instr").addEventListener("click", e => {
+  const b = e.target.closest("[data-i]"); if (b) { nm.instr = b.dataset.i; buildNewSheet(); }
+  /* any instrument: the same searchable picker as everywhere, then back to this sheet */
+  if (e.target.closest("[data-more]")) pickInstrument("Instrument", id => { nm.instr = id; openSheet("new"); });
+});
 $("#new-instr").addEventListener("change", e => { if (e.target.id === "new-instr-more" && e.target.value) { nm.instr = e.target.value; buildNewSheet(); } });
 $$("#new-time button").forEach(b => b.addEventListener("click", () => { nm.time = b.dataset.v; buildNewSheet(); }));
 $("#new-key").addEventListener("change", e => { nm.key = +e.target.value; });
 $("#new-title").addEventListener("input", e => { nm.title = e.target.value; });
 [["#new-bpm-down", -5], ["#new-bpm-up", 5]].forEach(([s, d]) => $(s).addEventListener("click", () => { nm.bpm = Math.max(30, Math.min(240, nm.bpm + d)); $("#new-bpm").textContent = String(nm.bpm); }));
 /* a ready tune written for the chosen instrument (its octave, transposition, clef) with the piano under it */
-$("#new-ready").addEventListener("click", e => {
-  const b = e.target.closest("[data-t]"); if (!b) return;
+$("#new-ready").addEventListener("click", e => { const b = e.target.closest("[data-t]"); if (b) openReadyTune(b.dataset.t); });
+/* straight from "+": for the player's main instrument */
+$("#add-ready").addEventListener("click", e => { const b = e.target.closest("[data-t]"); if (b) { nm.instr = nm.instr || profile().main; openReadyTune(b.dataset.t); } });
+function openReadyTune(tid) {
+  const b = { dataset: { t: tid } };
   const ins = instrById(nm.instr), t = READY_TUNES[b.dataset.t], base = readyTuneXml(b.dataset.t);
   let xml = makePart(base, "P1", { role: "melody", instr: ins });
   xml = makePart(xml, "P1", { role: "chords", instr: instrById("fortepian") });
   const d = parseXml(xml), root = d.documentElement;
   kids(root, "part").find(p => p.getAttribute("id") === "P1").remove(); kids(kid(root, "part-list"), "score-part").find(p => p.getAttribute("id") === "P1").remove();
   xml = new XMLSerializer().serializeToString(d);
-  closeSheetThen(() => { openPiece({ xml, sourceType: "own", title: t.title, composer: t.composer, instrument: ins.name }); S.dirty = true; savePiece(); });
-});
+  closeSheetThen(async () => {
+    const names = new Set((await DB.all().catch(() => [])).map(p => p.title)); let title = t.title, k = 2; while (names.has(title)) title = `${t.title} ${k++}`;
+    openPiece({ xml, sourceType: "own", title, composer: t.composer, instrument: ins.name }); S.dirty = true; savePiece();
+  });
+}
 $("#new-go").addEventListener("click", () => {
   const ins = instrById(nm.instr), [beats, bt] = nm.time.split("/").map(Number);
-  const xml = blankXml(4, { clef: ins.clef, beats, beatType: bt, fifths: nm.key, tempo: nm.bpm, title: nm.title || "Nowa melodia", part: ins.name });
+  /* the new part declares its instrument (and <transpose> for a transposing one), in its own clef */
+  const d = parseXml(blankXml(4, { clef: ins.clef, beats, beatType: bt, fifths: nm.key, tempo: nm.bpm, title: nm.title || "Nowa melodia", part: ins.name }));
+  setDeclared(d, d.getElementsByTagName("score-part")[0], ins); setTranspose(d, d.getElementsByTagName("part")[0], trIv(ins.tr));
+  const xml = new XMLSerializer().serializeToString(d);
   closeSheetThen(() => {
     openPiece({ xml, sourceType: "own", title: nm.title || "Nowa melodia", composer: "", instrument: ins.name });
     S.dirty = true; savePiece(); S.inLen = "quarter"; S.edTab = null; nm.title = "";
@@ -2935,13 +3650,14 @@ $("#new-go").addEventListener("click", () => {
 /* ---------------- 3.8 parts: chips under the title, "+" adds a part written automatically ----------------
    (benchmark: MuseScore, Flat, StaffPad, BandLab, Logic Session Players, Soundslice, iReal Pro) */
 const ap = { instr: null, role: "voice2", int: 0, show: "staff" };
-const partName = id => { const sp = [...parseXml(S.piece.xml).getElementsByTagName("score-part")].find(x => x.getAttribute("id") === id); return sp ? txt(sp, "part-name") : id; };
+const partName = id => { const n = scoreParts().names; return id in n ? n[id] : id; };      // read once per score (was a parse per call)
 function renderPartStrip() {
   const box = $("#pstrip"); if (!box || !S.piece) return;
   const only = S.only;
-  box.innerHTML = S.parts.map(p => {
+  box.innerHTML = S.parts.map((p, k) => {
     const nm = partLabel(p);
-    return `<button class="pchip${only === p.id ? " only" : ""}${pb.mute.has(p.id) ? " muted" : ""}${p.keep ? "" : " off"}" data-pid="${p.id}">${icon(p.staves > 1 || PIANO_RE.test(nm) ? "piano" : "trombone")}<span>${esc(nm)}</span></button>`;
+    /* each part keeps one of the seven slide-position colours, as a dot on its chip */
+    return `<button style="--pc:var(--pos-${(k % 7) + 1})" class="pchip${only === p.id ? " only" : ""}${pb.mute.has(p.id) ? " muted" : ""}${p.keep ? "" : " off"}" data-pid="${p.id}">${icon(p.staves > 1 || PIANO_RE.test(nm) ? "piano" : "trombone")}<span>${esc(nm)}</span></button>`;
   }).join("") + `<button class="pchip add" data-sheet="addpart" aria-label="Dodaj partię">${icon("plus")}</button>`;
 }
 /* a tap shows only that part (again: all of them); a long press opens what can be done with it */
@@ -2965,7 +3681,7 @@ function showOnly(pid) {
 let partSheetId = null;
 function openPartSheet(pid) { partSheetId = pid; openSheet("part"); }
 function buildPartSheet() {
-  const pid = partSheetId; $("#sh-part-t").textContent = partName(pid);
+  const pid = partSheetId, pp = S.parts.find(p => p.id === pid); $("#sh-part-t").textContent = pp ? partLabel(pp) : partName(pid);
   $("#pp-mute").setAttribute("aria-pressed", String(pb.mute.has(pid)));
   $("#pp-only").setAttribute("aria-pressed", String(S.only === pid));
   $("#pp-del").disabled = S.parts.length < 2; $("#pp-only").disabled = S.parts.length < 2;
@@ -2979,17 +3695,21 @@ $("#pp-print").addEventListener("click", () => closeSheetThen(() => withOnly(par
 $("#pp-send").addEventListener("click", () => closeSheetThen(async () => { const keep = exportParts; exportParts = [partSheetId]; try { await savePdf(true); } finally { exportParts = keep; } }));
 /* the same notes on another instrument (a bassoon line as the 2nd trombone); an octave up or down */
 $("#pp-instr").addEventListener("click", () => { const pid = partSheetId; closeSheetThen(() => pickInstrument("Jaki instrument?", id => {
-  pushUndo(); applyNewXml(orchestrateXml(changePartInstr(S.piece.xml, pid, instrById(instrOfPart(pid)), instrById(id)), pid), pid); hudUndo(`Teraz: ${instrById(id).name}`);
+  pushUndo(); applyNewXml(orchestrateXml(changePartInstr(S.piece.xml, pid, instrById(instrOfPart(pid)), instrById(id), partTr(pid)), pid), pid); hudUndo(`Teraz: ${instrById(id).name}`);
 })); });
 $$("#pp-up, #pp-down").forEach(b => b.addEventListener("click", () => {
   const pid = partSheetId, dir = b.id === "pp-up" ? 1 : -1, ins = S.parts.find(p => p.id === pid)?.staves > 1 ? null : instrById(instrOfPart(pid));
-  pushUndo(); applyNewXml(orchestrateXml(shiftPartOctave(S.piece.xml, pid, dir, ins)), pid);   /* keeps its number */ hudUndo(dir > 0 ? "Oktawę wyżej" : "Oktawę niżej");
+  const out = shiftPartOctave(S.piece.xml, pid, dir, ins), known = ins && namedInstr(pid), tr = partTr(pid);
+  /* an octave the instrument cannot play is refused (the notes stay where they were) */
+  if (known && outOfRange(out, pid, known, tr) > 0.2 && outOfRange(out, pid, known, tr) > outOfRange(S.piece.xml, pid, known, tr)) { hud(`${dir > 0 ? "Wyżej" : "Niżej"} ${known.name.toLowerCase()} nie zagra`, 3000); return; }
+  pushUndo(); applyNewXml(orchestrateXml(out), pid);   /* keeps its number */ hudUndo(dir > 0 ? "Oktawę wyżej" : "Oktawę niżej");
 }));
 $("#pp-del").addEventListener("click", () => {
   const id = partSheetId, doc = parseXml(S.piece.xml), root = doc.documentElement;
   kids(root, "part").forEach(p => { if (p.getAttribute("id") === id) p.remove(); });
   kids(kid(root, "part-list"), "score-part").forEach(sp => { if (sp.getAttribute("id") === id) sp.remove(); });
-  pushUndo(); applyNewXml(new XMLSerializer().serializeToString(doc), null); closeSheet();
+  /* the section is numbered again (Puzon I, III → Puzon I, II; one left: Puzon) */
+  pushUndo(); applyNewXml(orchestrateXml(new XMLSerializer().serializeToString(doc)), null); closeSheet();
   hudUndo("Usunięto partię");
 });
 /* the score changed shape (a part added or removed): parts are read again, the view keeps its settings */
@@ -3000,34 +3720,29 @@ function applyNewXml(xml, addId) {
   S.parts.forEach(p => { if (p.id === addId) p.keep = true; });
   S.loadedKey = null; changed(); renderPartStrip();
 }
+/* the toast's "Cofnij" undoes its own change only: after another edit it does nothing (the editor's Cofnij does) */
 function hudUndo(msg) {
-  hud(msg, 4000);
+  hud(msg, 8000);
   const h = $("#toast"); const b = document.createElement("button"); b.className = "toast-act"; b.textContent = "Cofnij";
-  b.addEventListener("click", () => { if (S.undo && S.undo.length) { applyNewXml(S.undo.pop(), null); h.classList.remove("show"); } });
+  const mine = S.piece && S.piece.xml, depth = S.undo ? S.undo.length : 0;
+  b.addEventListener("click", () => { h.classList.remove("show"); if (S.piece && S.piece.xml === mine && S.undo && S.undo.length === depth) undo(); });
   h.appendChild(b);
 }
 /* sections numbered and the score in orchestra order (arrange.js orchestrate); a part's instrument: the one it
    declares, else its name, else (the melody) the piece's instrument */
 function orchestrateXml(xml, newId = null) {
-  const plain = n => (n || "").replace(/ (I|II|III|IV|V|VI|\d)$/, "").trim().toLowerCase();
-  const first = analyseXml(xml).parts.find(p => !(p.staves > 1 || PIANO_RE.test(p.name)));
-  return orchestrate(xml, sp => {
+  const mel = S.piece && S.parts ? melodyPart() : null;
+  return orchestrate(xml, (sp, p) => {
     const dec = declaredInstr(sp); if (dec) return dec;
-    const n = plain(txt(sp, "part-name")), hit = INSTRUMENTS.find(i => i.name.toLowerCase() === n); if (hit) return hit;
-    if (first && sp.getAttribute("id") === first.id && S.piece && S.piece.instrument) return INSTRUMENTS.find(i => i.name.toLowerCase() === plain(S.piece.instrument)) || null;
+    /* a name is trusted when the part's own <transpose> agrees with it (no <transpose> = not transposed: a "Trumpet"
+       in a concert-pitch score is not a B♭ part), or when it is one of Solo's own Polish names */
+    const nm = txt(sp, "part-name"), hit = instrFromName(nm), own = INSTRUMENTS.some(i => i.name.toLowerCase() === nm.replace(ROMAN_RE, "").trim().toLowerCase());
+    if (hit && (own || (p ? trOfTranspose(p) ?? 0 : 0) === (hit.tr || 0))) return hit;
+    if (sp.getAttribute("id") === mel && S.piece.instrument) return instrFromName(S.piece.instrument);
     return null;
   }, newId);
 }
-/* parts are numbered when an instrument appears twice: Puzon → Puzon I, the new one Puzon II */
-function numberParts(xml, base) {
-  const doc = parseXml(xml), sps = [...doc.getElementsByTagName("score-part")];
-  const same = sps.filter(sp => { const n = txt(sp, "part-name").trim(); return n === base || new RegExp(`^${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} (I|II|III|IV|V)$`).test(n); });
-  if (same.length > 1) same.forEach((sp, i) => { kid(sp, "part-name").textContent = `${base} ${["I", "II", "III", "IV", "V"][i] || i + 1}`; });
-  if (same.length > 1 && S.piece.instrument === base) {
-    const first = same[0].getAttribute("id"); kids(doc.documentElement, "part"); // the melody keeps "I"
-  }
-  return new XMLSerializer().serializeToString(doc);
-}
+
 function buildAddPartSheet() {
   instrPicker($("#ap-instr"), { onPick: id => { rememberInstr(id); apStep2(id); } });
   $("#ap-step1").hidden = false; $("#ap-step2").hidden = true; $("#ap-back").hidden = true; $("#sh-addpart-t").textContent = ap.replace ? "Zmień partię" : "Dodaj partię";
@@ -3058,11 +3773,13 @@ $$("#ap-role [data-role]").forEach(b => b.addEventListener("click", () => { ap.r
 $("#ap-src").addEventListener("click", e => { const b = e.target.closest("[data-src]"); if (!b) return; ap.src = b.dataset.src; $$("#ap-src [data-src]").forEach(x => x.setAttribute("aria-pressed", String(x === b))); });
 $$("#ap-int button").forEach(b => b.addEventListener("click", () => { ap.int = +b.dataset.int; syncAp(); }));
 $$("#ap-show button").forEach(b => b.addEventListener("click", () => { ap.show = b.dataset.show; syncAp(); }));
-/* the melody part: the first kept one that is not a piano */
-const melodyPart = () => (S.parts.find(p => p.keep && !(p.staves > 1 || PIANO_RE.test(p.name))) || S.parts[0]).id;
-function partLabel(p) { if (declaredOf(p.id)) return partName(p.id) || p.name; const own = partName(p.id) || p.name, solo = S.parts.find(x => !(x.staves > 1 || PIANO_RE.test(x.name))); return p === solo && S.piece.instrument && !/ (I|II|III|IV)$/.test(own) ? S.piece.instrument : own; }
-/* how far a part is written above how it sounds: only for a part named for a transposing instrument */
-function partTr(pid) { try { const i = namedInstr(pid); return i ? i.tr || 0 : 0; } catch { return 0; } }
+/* the melody part (core.js melodyId: kept with the piece, not "whichever part is first") */
+const melodyPart = () => melodyId();
+const isMelodic = pid => { const p = S.parts.find(x => x.id === pid); return !!p && !(p.staves > 1 || PIANO_RE.test(p.name)); };
+function partLabel(p) { if (declaredOf(p.id)) return partName(p.id) || p.name; const own = partName(p.id) || p.name; return p.id === melodyId() && isMelodic(p.id) && S.piece.instrument && !ROMAN_RE.test(own) ? S.piece.instrument : own; }
+/* how far a part is written above how it sounds (declared instrument → the file's <transpose> → its name); Verovio's
+   MIDI values are the written notes, so playback subtracts this once */
+function partTr(pid) { try { return partInstr(pid).tr; } catch (e) { console.warn(e); return 0; } }
 /* the notes of one voice of a part as they sound (written pitch minus the instrument's transposition) */
 function soundingLine(xml, pid, voice = "1") {
   const part = kids(parseXml(xml).documentElement, "part").find(p => p.getAttribute("id") === pid); if (!part) return [];
@@ -3096,26 +3813,33 @@ $("#ap-go").addEventListener("click", () => {
   try {
     const r = addPart(S.piece.xml, ap.instr, ap.role, { int: ap.int, src: ap.src, same: (ap.role === "voice2" || ap.role === "voice3") && ap.show === "same" && !$("#ap-showbox").hidden });
     const rep = ap.replace; ap.replace = null;
-    if (rep && r.id) r.xml = replacePart(r.xml, rep, r.id);
+    if (rep && r.id) { r.xml = replacePart(r.xml, rep, r.id); if (rep === S.melody) S.melody = r.id; }
     pushUndo(); closeSheetThen(() => { applyNewXml(r.xml, r.id); hudUndo(rep ? "Zmieniono partię" : "Dodano partię"); });
   } catch (e) { console.error(e); hud("Nie udało się dopisać tej partii"); }
 });
 /* quick ensembles: duo = melody + second voice, trio = + bass; for the player's own instrument */
 $$("#ap-quick [data-quick]").forEach(b => b.addEventListener("click", () => {
+  if (!isMelodic(melodyPart())) { hud("Najpierw potrzebna jest melodia (jeden głos)", 3000); return; }
   if (b.dataset.quick === "canon") return quickCanon();
   try {
     const me = instrById(instrOfPart(melodyPart()));
     let r = addPart(S.piece.xml, me.id, "voice2"), xml = r.xml, ids = [r.id];
     if (b.dataset.quick === "trio") {
       /* a trio of the piece's own instrument: violins → three violins, trumpet → three trumpets; in a trombone
-         section the third is the bass trombone (Puzon I–III) */
-      const third = ["puzon", "puzon-alt"].includes(me.id) ? "puzon-b" : me.id;
+         section the third is the bass trombone (Puzon I–III). When the instrument cannot go a fifth under the tune's
+         lowest note, the section's lower instrument plays the third voice (violin → viola, alto sax → tenor sax) */
+      const low = Math.min(...soundingLine(S.piece.xml, melodyPart()));
+      const third = ["puzon", "puzon-alt"].includes(me.id) ? "puzon-b" : me.lo <= low - 7 || !SECTION_BASS[me.id] ? me.id : SECTION_BASS[me.id];
       const r2 = addPart(xml, third, "voice3"); xml = r2.xml; ids.push(r2.id);
     }
     pushUndo(); closeSheetThen(() => { applyNewXml(xml, ids[0]); S.parts.forEach(p => { if (ids.includes(p.id)) p.keep = true; }); changed(); renderPartStrip(); hudUndo(b.dataset.quick === "trio" ? "Trio gotowe" : "Duet gotowy"); });
   } catch (e) { console.error(e); hud("Nie udało się dopisać partii"); }
 }));
 
+/* the lower instrument of a section, for a third voice the instrument itself cannot reach */
+const SECTION_BASS = { trabka: "puzon", "trabka-c": "puzon", kornet: "puzon", flugelhorn: "eufonium", waltornia: "puzon", "sakshorn-a": "sakshorn-t", skrzypce: "altowka", altowka: "wiolonczela",
+  piccolo: "flet", flet: "klarnet", oboj: "fagot", rozek: "fagot", "klarnet-es": "klarnet", klarnet: "klarnet-bas", "klarnet-a": "klarnet-bas", "sax-s": "sax-t", "sax-a": "sax-t", "sax-t": "sax-b",
+  sopran: "alt", alt: "tenor", tenor: "bas", mandolina: "gitara", ukulele: "gitara", dzwonki: "marimba", ksylofon: "marimba", wibrafon: "marimba" };
 /* Kanon: three voices of the piece's instrument (trombones: Puzon I–III, the third a bass trombone), entering at
    the distance where they sound best; a tune that does not work as a canon is said so, not written badly */
 function quickCanon() {
@@ -3144,9 +3868,9 @@ function replacePart(xml, oldId, newId) {
    Chips under the search; a piece can be in several; automatic ones: Ulubione, Ostatnie, Moje, Ze zdjęć. */
 const COL_COLORS = ["#E5484D", "#F76B15", "#FFC53D", "#30A46C", "#12A594", "#0090FF", "#6E56CF", "#D6409F", "#8D8D8D", "#A18072", "#3E63DD", "#29A383"];
 const cols = () => { try { return JSON.parse(store.get("cols", "[]")) || []; } catch { return []; } };
-const saveCols = c => store.set("cols", JSON.stringify(c));
+const saveCols = c => store.set("cols", JSON.stringify(c)) || hud("Nie udało się zapisać kolekcji. Pamięć urządzenia może być pełna.", 4000);
 const favs = () => { try { return JSON.parse(store.get("favs", "[]")) || []; } catch { return []; } };
-const saveFavs = f => store.set("favs", JSON.stringify(f));
+const saveFavs = f => store.set("favs", JSON.stringify(f)) || hud("Nie udało się zapisać ulubionych. Pamięć urządzenia może być pełna.", 4000);
 let libCol = store.get("libCol", "all");
 function inCol(p, all) {
   if (libCol === "all") return true;
@@ -3164,7 +3888,7 @@ function renderCols(all) {
   const mine = cols();
   if (![...auto.map(a => a[0]), ...mine.map(c => c.id)].includes(libCol)) libCol = "all";
   box.innerHTML = auto.map(([id, name, ic]) => `<button class="cchip" role="tab" data-col="${id}" aria-selected="${libCol === id}">${ic ? icon(ic) : ""}<span>${name}</span></button>`).join("") +
-    mine.map(c => `<button class="cchip" role="tab" data-col="${c.id}" data-user aria-selected="${libCol === c.id}"><i class="cdot" style="background:${esc(c.color || "#8D8D8D")}"></i><span>${esc(c.name)}</span></button>`).join("") +
+    mine.map(c => `<button class="cchip" role="tab" data-col="${esc(c.id)}" data-user aria-selected="${libCol === c.id}"><i class="cdot" style="background:${esc(c.color || "#8D8D8D")}"></i><span>${esc(c.name)}</span></button>`).join("") +
     `<button class="cchip add" id="col-add" aria-label="Nowa kolekcja">${icon("plus")}</button>`;
 }
 (() => {
@@ -3196,8 +3920,11 @@ $("#col-save").addEventListener("click", () => {
 });
 $("#col-del").addEventListener("click", () => {
   const all = cols(), c = all.find(x => x.id === colTarget); if (!c) return;
+  const at = all.indexOf(c);
   saveCols(all.filter(x => x !== c)); if (libCol === c.id) { libCol = "all"; store.set("libCol", "all"); }
-  closeSheetThen(() => { hud("Usunięto kolekcję. Utwory zostały.", 2500); refreshLibrary(); });
+  /* the pieces stay; the collection itself (its name, colour and order) can come back */
+  const undo = () => { const now = cols(); if (now.some(x => x.id === c.id)) return; now.splice(Math.min(at, now.length), 0, c); saveCols(now); refreshLibrary(); };
+  closeSheetThen(() => { hudAct("Usunięto kolekcję. Utwory zostały.", "Cofnij", undo, 6000); refreshLibrary(); });
 });
 /* from a piece's long-press menu: ♥ and "Kolekcja" (tick the ones it belongs to) */
 function syncFavTile() { const on = cardPiece && favs().includes(cardPiece.id); $("#cd-fav").innerHTML = icon(on ? "heart-fill" : "heart") + `<span>Ulubione</span>`; $("#cd-fav").setAttribute("aria-pressed", String(!!on)); }
@@ -3208,7 +3935,7 @@ $("#cd-fav").addEventListener("click", () => {
 $("#cd-col").addEventListener("click", () => closeSheetThen(() => openSheet("addto")));
 function buildAddtoSheet() {
   const id = cardPiece && cardPiece.id, all = cols();
-  $("#addto-list").innerHTML = all.length ? all.map(c => `<label class="li"><i class="cdot" style="background:${esc(c.color || "#8D8D8D")}"></i><span class="grow"><b>${esc(c.name)}</b></span><input type="checkbox" class="switch" data-c="${c.id}" ${c.items.includes(id) ? "checked" : ""}></label>`).join("") : `<p class="note">Nie masz jeszcze kolekcji.</p>`;
+  $("#addto-list").innerHTML = all.length ? all.map(c => `<label class="li"><i class="cdot" style="background:${esc(c.color || "#8D8D8D")}"></i><span class="grow"><b>${esc(c.name)}</b></span><input type="checkbox" class="switch" data-c="${esc(c.id)}" ${c.items.includes(id) ? "checked" : ""}></label>`).join("") : `<p class="note">Nie masz jeszcze kolekcji.</p>`;
 }
 $("#addto-list").addEventListener("change", e => {
   const cid = e.target.dataset.c, id = cardPiece && cardPiece.id; if (!cid || !id) return;
@@ -3222,10 +3949,14 @@ $("#addto-new").addEventListener("click", () => { colTarget = null; colPiece = c
 function markRange() {
   if (S.iv.d || S.iv.s) return;
   try {
+    const slots = staffSlots(), known = new Map();     // one instrument lookup per part; a part nothing names is not tinted
     $$("#pages g.note").forEach(g => {
-      const pid = partOfEl(g); if (!pid) return;
-      const ins = instrById(instrOfPart(pid)), v = tk.getMIDIValuesForElement(g.id); if (!v || !(v.pitch > 0)) return;
-      const w = v.pitch; g.classList.toggle("outrange", w < ins.lo + ins.tr - 1 || w > ins.hi + ins.tr + 1);
+      const pid = partOfEl(g, slots); if (!pid) return;
+      if (!known.has(pid)) { const pi = partInstr(pid); known.set(pid, pi.ins ? { ins: pi.ins, tr: pi.tr } : null); }
+      const k = known.get(pid); if (!k) return;
+      const v = tk.getMIDIValuesForElement(g.id); if (!v || !(v.pitch > 0)) return;
+      const w = v.pitch - k.tr - (pid === readingPartId() ? 12 * (S.readOct || 0) : 0);
+      g.classList.toggle("outrange", w < k.ins.lo - 1 || w > k.ins.hi + 1);
     });
   } catch (e) { console.warn(e); }
 }
